@@ -1,8 +1,10 @@
 # Huoma Roadmap
 
 This document is the **forward-looking plan** for Huoma. The historical
-journey lives in `BIANCHI_JOURNEY.md` (Phases 1–5) and `PHASE6_REPORT.md`
-(KIM validation + the `apply_zz_fast` bug discovery).
+journey lives in `BIANCHI_JOURNEY.md` (Phases 1–5), `PHASE6_REPORT.md`
+(KIM validation + the `apply_zz_fast` bug discovery), and
+`PHASE7_REPORT.md` (matched-budget allocator + sin(C/2) reframe + Track A
+verdict).
 
 ## North star
 
@@ -22,34 +24,56 @@ way — are anything that needs (a) 2D physical topology beyond 1D
 nearest-neighbour, (b) open-system / Lindblad dynamics, or (c) translation-
 invariant chains where uniform-χ is already optimal.
 
-## Where Huoma stands today (April 2026)
+## Where Huoma stands today (April 2026, after Phase 7)
 
 ✅ **Validated**:
 - 1D MPS evolution at floating-point precision against an independent
   dense statevector reference at N = 12 (2.6e-15) and N = 24 (7.4e-16)
 - 6.8× speedup over dense statevector at N = 24 with FP-limit observable
   agreement
-- 39 lib tests + 6 KIM stages, all green
+- 49 lib tests + 4 KIM stages (A, B, D, F), all green
+
+✅ **Production allocator path**:
+- `huoma::chi_allocation_sinc(frequencies, total_budget, chi_min, chi_max)`
+  is the recommended one-call entry point for adaptive χ on any 1D MPS
+  workload with per-site frequencies. O(N · radius²), microseconds at
+  N ≤ 200, no pilot, no censoring.
+- `huoma::chi_allocation_target_budget(scores, total_budget, chi_min,
+  chi_max)` is the score-agnostic water-filling primitive for users who
+  compute their own per-bond complexity scores by other means.
+- Both live in `src/allocator.rs` and are re-exported at crate root.
 
 ✅ **Infrastructure in place**:
 - MPS-native `expectation_z` and `norm_squared` (work for any N)
-- Discarded-weight tracker on every bond
-- Finite-difference Jacobian engine with PR / total-sensitivity allocators
+- Discarded-weight tracker on every bond + `TruncationMode::DiscardedWeight`
+- sin(C/2) channel map (`ChannelMap::from_frequencies_sparse`) and
+  partitioning (`partition::partition_adaptive`)
 - Independent dense reference simulator for KIM (homogeneous + disordered)
 - Reproducible deterministic test infrastructure (fixed PRNG seeds)
 - Bianchi-violation diagnostic for gauge consistency
 
 ⚠️ **Honest limitations**:
-- The Jacobian-PR allocator does not yet beat uniform-χ at matched total
-  budget. It produces sensible differentiated profiles on disordered
-  models but the wins are proportional speedup at smaller budget, not
-  better accuracy at the same budget.
-- 1D-only. No 2D topology support (heavy-hex, square lattice).
-- No site-disordered models beyond `h_x` disorder. No frequency-hierarchy
-  models. No boundary-effect studies.
-- The `channel.rs` commensurability filter (`sin(C/2)`) is wired in but
-  empirically does not predict discarded weight on QKR / Bethe-ansatz
-  circuits — see `BIANCHI_JOURNEY.md`.
+- 1D-only. No 2D topology support (heavy-hex, square lattice). **This is
+  the live constraint** that gates the strategic case for Track D.
+- sin(C/2) is *competitive with* uniform-χ on disordered KIM at matched
+  budget (~5–30 % off in either direction depending on N), not strictly
+  better. Per Dalzell–Brandão (Quantum 2019) this is the predicted
+  ceiling for any allocator on clean / weakly-disordered 1D systems —
+  uniform-χ is structurally near-optimal there.
+- Whether sin(C/2) can beat uniform on *strongly* disordered (Griffiths
+  regime) 1D systems is untested. The roadmap does not currently plan to
+  test it; see Track A's "what closed Phase 7" section.
+
+🚫 **Removed in Phase 7**:
+- The finite-difference Jacobian module and all its allocators. The
+  discarded-weight observable censors boundary bonds at low chi_min,
+  producing matched-budget allocations 6–11× worse than uniform on
+  disordered KIM. Documented in `PHASE7_REPORT.md` and commit `19a5793`.
+- The previous claim that sin(C/2) "doesn't predict per-bond discarded
+  weight on QKR" was correct as a Spearman result on one benchmark
+  family but does not survive as a general statement. As a matched-budget
+  allocator on disordered KIM, sin(C/2) is the safe default. See
+  Phase 7 report.
 
 🚫 **Permanently out of scope**:
 - TJM / open-system simulation. Treats noise as Lindblad bath, exactly
@@ -61,84 +85,76 @@ invariant chains where uniform-χ is already optimal.
 
 ## Roadmap
 
-The roadmap is organised in four tracks. Tracks A–B are concrete and
-near-term. Tracks C–D are strategic bets that depend on the answer to one
-unsettled question (Track A.4).
+The roadmap is organised in four tracks. Track A is **closed** by Phase 7
+(`PHASE7_REPORT.md`); Track B is the production-hardening backlog; Track C
+contains research ideas that may or may not get funded; Track D is the
+next strategic commitment.
 
 ---
 
-### Track A — Make the existing pipeline pull its weight
+### Track A — Closed (Phase 7, commits `19a5793`, `811cb15`, `ce488e0`)
 
-**Goal**: turn the Jacobian allocator from "produces sensible profiles"
-into "wins on accuracy at matched budget" on at least one well-defined
-benchmark family.
+**Outcome**: the production allocator path is `huoma::chi_allocation_sinc`,
+built on the score-agnostic `chi_allocation_target_budget` water-filling
+primitive. The finite-difference Jacobian story is retired.
 
-#### A.1 — Target-budget allocator (small)
+#### A.1 — Target-budget allocator ✅ done
 
-The current `chi_allocation_from_jacobian` heuristic maps PR scores to χ
-via `sqrt(s/max_s)` clamped to `[chi_min, chi_max]`. Total budget is an
-emergent property, not a constraint. Compare-at-matched-budget is therefore
-not directly achievable.
+Delivered as `chi_allocation_target_budget(scores, total_budget, chi_min,
+chi_max)` in `src/allocator.rs`. Greedy integer water-filling, exact
+budget consumption, 11 corner-case unit tests. Score-agnostic by design —
+accepts any non-negative per-bond score vector. Commit `19a5793`.
 
-**Deliverable**: a `chi_allocation_target_budget(jacobian, total_budget,
-chi_min, chi_max)` function that solves the constrained allocation problem
-exactly. Use water-filling on the score distribution.
+#### A.2 — Score shootout ⚠ obviated
 
-**Test**: re-run KIM Stage F (disordered) with budget exactly matching
-uniform-χ, check whether the Jacobian-allocated run beats uniform on max
-⟨Z⟩ error.
+PR vs. total-sensitivity were both benchmarked at matched budget on
+Stage F. Both produce allocations 6–11× worse than uniform-χ because the
+discarded-weight observable they share has a structural boundary blind
+spot (a bond with one qubit on its left has Schmidt rank ≤ 2, so the
+pilot's discarded weight there is artificially small, and the resulting
+score clamps the bond to chi_min). max-row-norm and effective-rank are
+derived from the same observable and inherit the same failure mode.
+Extending the shootout to more scores on the same observable was not
+worth the effort. See `PHASE7_REPORT.md` § "The boundary blind spot".
 
-#### A.2 — Score functions beyond participation ratio
+#### A.3 — Better benchmarks ⚠ obviated
 
-PR is a spread metric. It is the right thing if "this bond depends on many
-inputs ⇒ allocate more χ" is a good heuristic. It is not obviously the
-right thing for entanglement growth.
+The literature scan during Phase 7 (recorded in session notes) confirmed
+that for clean / weakly-disordered 1D systems, Dalzell–Brandão (Quantum
+2019) implies uniform-χ is structurally near-optimal — *no* allocator
+can give more than constant-factor improvements there. The only published
+opening for adaptive χ in 1D is bond-disordered XXZ in the Griffiths
+regime (Aramthottil et al., PRL 133, 196302, 2024). Adding more KIM
+benchmarks is not the experiment that resolves Track A — running Huoma
+against ITensor's ε-truncation on bond-disordered XXZ would be, but that
+is independently more interesting as a Track B / C item than as a
+gating Track A test.
 
-Test alternatives, all derivable from the same Jacobian matrix:
-- Total sensitivity `Σ_i |J_{ki}|²` (already implemented but never
-  benchmarked head-to-head against PR)
-- Maximum-row-norm: `max_i |J_{ki}|`
-- Effective rank: numerical rank of the row, e.g. `(Σ σ)² / Σ σ²` of the
-  row's singular value spectrum (PR-style but based on a singular value
-  decomposition of the row instead of L1/L2)
+#### A.4 — Answered
 
-**Deliverable**: shootout test in `tests/jacobian_score_shootout.rs` that
-runs all four scoring functions on the disordered KIM and reports
-accuracy-vs-budget Pareto curves.
+In its actual form ("does the Jacobian allocator beat uniform on 1D"):
+**no**, and the structural reason is now documented. In its intended
+form ("is there a production-quality per-bond χ allocator for 1D
+Huoma"): **yes**, sin(C/2) via water-filling, which has been Huoma's
+foundational thesis since the original Tilde Pattern paper. The Phase 5e
+detour into ML-style sensitivity analysis is closed.
 
-#### A.3 — Better benchmarks where the Jacobian *can* win
+#### Stage F numbers from Phase 7
 
-The disordered self-dual KIM has only one axis of inhomogeneity (h_x), and
-the underlying physics localises strongly at large disorder, suppressing
-entanglement everywhere. So the dynamic range of "where do bonds need
-more χ" is small.
+For reference, the matched-budget shootout on disordered self-dual KIM
+(`stage_f_disordered_sinc_vs_uniform`):
 
-Better targets:
-- **Frequency-hierarchy KIM**: per-site ω_i drawn from a distribution
-  with two well-separated peaks (slow + fast sites). The bonds between
-  fast-fast pairs need more χ than slow-slow pairs.
-- **Domain-wall melting in disordered XXZ**: published reference results
-  (Jepsen et al., Nature 588, 2020; many MPS follow-ups) and the spatial
-  structure varies dramatically with time.
-- **Quench across a defect**: a single anomalous site in an otherwise
-  uniform chain. The entanglement front bends around the defect.
+| N  | strategy            | max ⟨Z⟩ err | budget | build time |
+|----|---------------------|-------------|--------|------------|
+| 14 | uniform χ=8         | 6.49e-2     | 104    | —          |
+| 14 | sinc2 matched       | 6.78e-2     | 104    | 0.01 ms    |
+| 14 | (jacobian PR/L1)    | 7.27e-1     | 104    | 32 ms      |
+| 50 | uniform χ=8         | 1.02e-1     | 392    | —          |
+| 50 | sinc2 matched       | 1.36e-1     | 392    | 0.06 ms    |
+| 50 | (jacobian PR/L1)    | 6-7e-1      | 392    | 227 ms     |
 
-**Deliverable**: at least one of the above as a new validation stage in
-`tests/`. Use the same statevector-reference structure as `kim_validation`.
-
-#### A.4 — The unsettled question: does *any* per-bond sensitivity beat uniform on 1D?
-
-This is the question that decides Tracks C and D. If the answer is **yes**,
-Huoma has a real algorithmic story and TTN generalisation (Track D) is
-worth the months of work. If the answer is **no** — i.e. uniform-χ is
-provably near-optimal for any 1D MPS at the level of accuracy we care
-about — then Huoma's value is in the *infrastructure* (validation,
-discarded-weight tracking, MPS-native observables), not in the allocator,
-and the right move is to harden the existing tools rather than build new
-ones.
-
-**A.4 is the gating question for everything below.** Resolve it via the
-A.1 + A.2 + A.3 work.
+Jacobian rows are recorded here for reference only — the implementation
+is gone as of commit `ce488e0`.
 
 ---
 
@@ -195,10 +211,13 @@ narrowed. Same for several `derive_default_impl` warnings on
 
 ---
 
-### Track C — Algorithmic experiments (gated by A.4)
+### Track C — Algorithmic experiments (no longer gated)
 
-These are research ideas that are worth trying *only if* Track A
-demonstrates that per-bond adaptive χ has real value on 1D.
+Track A is closed but did not produce evidence that adaptive χ on 1D MPS
+delivers more than constant-factor wins over uniform-χ in any regime
+Huoma currently tests. Track C ideas remain individually interesting but
+none are *required* for Huoma's production story; they are research
+investments that compete with Track D for time. Pursue selectively.
 
 #### C.1 — TDVP instead of TEBD
 
@@ -229,11 +248,22 @@ discarded weight. Worth revisiting if A.2 shows that PR is the bottleneck.
 
 ---
 
-### Track D — Tree-Tensor-Network generalisation (the strategic bet)
+### Track D — Tree-Tensor-Network generalisation (the next strategic commitment)
 
-**Gated by A.4 and a deliberate strategic decision.** This is the largest
-single investment that would change what Huoma is. It is months of work
-with real research risk.
+**No longer gated by Track A.** This is the largest single investment
+that would change what Huoma is. It is months of work with real research
+risk. The strategic case is straightforward: a simulator that cannot
+execute on the actual target backends (IBM Eagle/Heron heavy-hex,
+IQM Garnet/Emerald grids) is not a useful tool, regardless of how
+well-validated its 1D allocator is. Track A confirmed that the 1D
+allocator story is *finished* — sin(C/2) via water-filling is the right
+production default and there is no further headroom there — so the
+months of Track D work do not have to carry the weight of an unresolved
+1D question alongside them.
+
+Track D is the next planning conversation. A separate design doc will
+break it down properly; the bullet points below are the existing Phase 6
+sketch, kept as a starting point.
 
 #### D.1 — TTN data structure and basic operations
 
@@ -310,21 +340,19 @@ Recording these so we don't re-litigate them every quarter:
 
 ## Decision points
 
-The roadmap has two explicit decision points where strategic input is
-required, not just engineering execution:
-
-1. **After Track A (estimated 2–3 weeks)**: does any sensitivity-based
-   allocator clearly beat uniform-χ on at least one well-defined 1D
-   benchmark family at matched budget? If yes → Track D becomes worth
-   the investment. If no → harden Track B and treat Huoma as
-   high-quality 1D MPS infrastructure with Jacobian as a useful but not
-   game-changing diagnostic.
+1. ✅ **Resolved (Phase 7)**: does any sensitivity-based allocator clearly
+   beat uniform-χ on a well-defined 1D benchmark at matched budget? **No**,
+   in the form the question was asked, and the right *production* answer
+   was sin(C/2) via water-filling all along. See `PHASE7_REPORT.md`.
 
 2. **Before starting Track D**: is the heavy-hex / 2D extension a
-   research project we want to invest months in, or is the right
-   strategic move to keep Huoma 1D-focused and let other tools handle
-   2D? This depends on (a) the answer to decision 1, (b) external
-   factors like collaboration interest and benchmark visibility.
+   research project we want to invest months in? The Phase 7 framing
+   ("a simulator that can't simulate most of our target backends isn't
+   worth the effort") is a strong yes by default; the open sub-question
+   is *how much* of Track D to scope into the first deliverable
+   (just heavy-hex topology + N=127 Tindall benchmark vs. also IQM grids
+   vs. also a new χ allocator extension to the tree case). This is the
+   next planning conversation.
 
 ---
 
