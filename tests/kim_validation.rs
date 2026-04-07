@@ -17,7 +17,8 @@
 //!         Jacobian-χ for total discarded weight and observable stability.
 
 use huoma::finite_difference_jacobian::{
-    chi_allocation_from_jacobian, InputJacobian, JacobianAllocation, JacobianConfig,
+    chi_allocation_from_jacobian, chi_allocation_from_jacobian_target_budget, InputJacobian,
+    JacobianAllocation, JacobianConfig,
 };
 use huoma::kicked_ising::{
     apply_kim_step, apply_kim_step_disordered, reference_kim_run,
@@ -483,8 +484,12 @@ fn stage_f_disordered_jacobian_wins() {
     {
         let n = 14_usize;
         let h_x_per_site = det_random_hx(n, seed, params.h_x, disorder_amplitude);
-        let chi_ceiling = 8_usize;
-        let chi_min_jac = 4_usize;
+        let chi_ceiling = 8_usize; // uniform baseline
+        let chi_min_jac = 2_usize;
+        // Allocator upper bound > uniform average so water-filling has room
+        // to redistribute within the same total budget. With chi_max_jac = 12,
+        // a single bond can take 12 if a pair of other bonds drops to 2 + 6.
+        let chi_max_jac = 12_usize;
 
         let t = Instant::now();
         let hist_ref = reference_kim_run_disordered(n, params, &h_x_per_site, n_steps);
@@ -520,7 +525,7 @@ fn stage_f_disordered_jacobian_wins() {
         let chi_jacobian = chi_allocation_from_jacobian(
             &jacobian,
             chi_min_jac,
-            chi_ceiling,
+            chi_max_jac,
             JacobianAllocation::ParticipationRatio,
         );
 
@@ -534,16 +539,70 @@ fn stage_f_disordered_jacobian_wins() {
         println!(
             "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (jac build {:.1}ms)",
             n,
-            format!("jacobian [{}..{}]", chi_min_jac, chi_ceiling),
+            format!("jac legacy [{}..{}]", chi_min_jac, chi_max_jac),
             err_j,
             budget_j,
             ms_j,
             mb_j,
             jac_build_ms
         );
+        println!("    legacy chi profile: {:?}", chi_jacobian);
 
-        // Print the Jacobian-allocated profile for inspection
-        println!("    chi profile: {:?}", chi_jacobian);
+        // ── A.1: matched-budget Jacobian via water-filling ──────────────
+        // Take the uniform-χ budget as a hard constraint and ask the
+        // Jacobian-PR allocator to spend exactly that, no more, no less.
+        // Allocator bounds [chi_min_jac .. chi_max_jac] must strictly
+        // bracket budget / n_bonds so that non-uniform allocations exist.
+        let chi_jac_matched = chi_allocation_from_jacobian_target_budget(
+            &jacobian,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+            JacobianAllocation::ParticipationRatio,
+        );
+        let t = Instant::now();
+        let (mps_jm, hist_jm) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched);
+        let ms_jm = t.elapsed().as_secs_f64() * 1000.0;
+        let err_jm = history_max_err(&hist_ref, &hist_jm);
+        let budget_jm: usize = chi_jac_matched.iter().sum();
+        let mb_jm = mps_jm.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
+            n,
+            "jac matched PR",
+            err_jm,
+            budget_jm,
+            ms_jm,
+            mb_jm
+        );
+        println!("    matched chi profile: {:?}", chi_jac_matched);
+
+        // ── A.1 with TotalSensitivity score, same matched budget ────────
+        let chi_jac_matched_l1 = chi_allocation_from_jacobian_target_budget(
+            &jacobian,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+            JacobianAllocation::TotalSensitivity,
+        );
+        let t = Instant::now();
+        let (mps_jl, hist_jl) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched_l1);
+        let ms_jl = t.elapsed().as_secs_f64() * 1000.0;
+        let err_jl = history_max_err(&hist_ref, &hist_jl);
+        let budget_jl: usize = chi_jac_matched_l1.iter().sum();
+        let mb_jl = mps_jl.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
+            n,
+            "jac matched L1",
+            err_jl,
+            budget_jl,
+            ms_jl,
+            mb_jl
+        );
+        println!("    matched-L1 chi profile: {:?}", chi_jac_matched_l1);
         println!();
     }
 
@@ -552,7 +611,8 @@ fn stage_f_disordered_jacobian_wins() {
         let n = 50_usize;
         let h_x_per_site = det_random_hx(n, seed, params.h_x, disorder_amplitude);
         let chi_ceiling = 8_usize;
-        let chi_min_jac = 4_usize;
+        let chi_min_jac = 2_usize;
+        let chi_max_jac = 12_usize;
         let chi_ref = 64_usize;
 
         let chi_ref_per_bond = vec![chi_ref; n - 1];
@@ -597,7 +657,7 @@ fn stage_f_disordered_jacobian_wins() {
         let chi_jacobian = chi_allocation_from_jacobian(
             &jacobian,
             chi_min_jac,
-            chi_ceiling,
+            chi_max_jac,
             JacobianAllocation::ParticipationRatio,
         );
 
@@ -611,12 +671,51 @@ fn stage_f_disordered_jacobian_wins() {
         println!(
             "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (jac build {:.1}ms)",
             n,
-            format!("jacobian [{}..{}]", chi_min_jac, chi_ceiling),
+            format!("jac legacy [{}..{}]", chi_min_jac, chi_max_jac),
             err_j,
             budget_j,
             ms_j,
             mb_j,
             jac_build_ms
+        );
+
+        // ── A.1: matched-budget Jacobian water-filling, PR + L1 ─────────
+        let chi_jac_matched = chi_allocation_from_jacobian_target_budget(
+            &jacobian,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+            JacobianAllocation::ParticipationRatio,
+        );
+        let t = Instant::now();
+        let (mps_jm, hist_jm) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched);
+        let ms_jm = t.elapsed().as_secs_f64() * 1000.0;
+        let err_jm = history_max_err(&hist_ref, &hist_jm);
+        let budget_jm: usize = chi_jac_matched.iter().sum();
+        let mb_jm = mps_jm.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
+            n, "jac matched PR", err_jm, budget_jm, ms_jm, mb_jm
+        );
+
+        let chi_jac_matched_l1 = chi_allocation_from_jacobian_target_budget(
+            &jacobian,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+            JacobianAllocation::TotalSensitivity,
+        );
+        let t = Instant::now();
+        let (mps_jl, hist_jl) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched_l1);
+        let ms_jl = t.elapsed().as_secs_f64() * 1000.0;
+        let err_jl = history_max_err(&hist_ref, &hist_jl);
+        let budget_jl: usize = chi_jac_matched_l1.iter().sum();
+        let mb_jl = mps_jl.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
+            n, "jac matched L1", err_jl, budget_jl, ms_jl, mb_jl
         );
         println!();
     }
