@@ -1,26 +1,25 @@
-//! Phase 6 — 1D Floquet Kicked Ising validation benchmark.
+//! 1D Floquet Kicked Ising validation benchmark.
 //!
-//! Validates the huoma adaptive-χ pipeline against an independent dense
-//! statevector reference at the self-dual point of the kicked Ising chain
-//! (J = h_x = π/4, h_z = 0; Bertini-Kos-Prosen, PRX 9, 021033, 2019).
+//! Validates the huoma simulator and the production sin(C/2) χ allocator
+//! against an independent dense statevector reference at the self-dual
+//! point of the kicked Ising chain (J = h_x = π/4, h_z = 0;
+//! Bertini-Kos-Prosen, PRX 9, 021033, 2019).
 //!
 //! Stages:
 //! - **A** N=12, χ_max = 64 (provably exact). Cross-check huoma against
-//!         the inline dense reference simulator. Expect agreement to ~1e-10.
-//! - **B** N=12, χ_max sweep at 4..32 (uniform). Print fidelity/error vs χ.
-//! - **C** N=12, Jacobian-allocated χ. Demonstrate that the adaptive profile
-//!         meets target accuracy at smaller total bond budget than uniform.
+//!         the dense reference simulator. Expect agreement to ~1e-10.
+//! - **B** N=12, χ_max sweep at 4..32 (uniform). Document fidelity/error vs χ.
 //! - **D** N=24, exact statevector reference (16M-dim) vs huoma at large χ.
 //!         Confirms the validation also holds at the largest tractable
 //!         statevector size.
-//! - **E** N=50, 100, 200 — no exact reference. Compare uniform-χ vs
-//!         Jacobian-χ for total discarded weight and observable stability.
+//! - **F** Disordered self-dual KIM (N=14 dense ref + N=50 high-χ ref).
+//!         Compares uniform-χ vs sin(C/2)-allocated χ at matched total
+//!         budget — the production allocator shootout.
+//!
+//! See `PHASE7_REPORT.md` for the verdict on the discarded-weight Jacobian
+//! allocator that previously occupied Stages C and E.
 
-use huoma::channel::ChannelMap;
-use huoma::finite_difference_jacobian::{
-    chi_allocation_from_jacobian, chi_allocation_from_jacobian_target_budget,
-    chi_allocation_target_budget, InputJacobian, JacobianAllocation, JacobianConfig,
-};
+use huoma::allocator::chi_allocation_sinc_with_radius;
 use huoma::kicked_ising::{
     apply_kim_step, apply_kim_step_disordered, reference_kim_run,
     reference_kim_run_disordered, KimParams,
@@ -67,35 +66,6 @@ fn run_mps_kim_disordered(
         history.push((0..n).map(|q| mps.expectation_z(q)).collect());
     }
     (mps, history)
-}
-
-/// Build a Jacobian for the **disordered** kicked Ising chain by perturbing
-/// each site's h_x around the supplied baseline. Returns the FD Jacobian of
-/// per-bond cumulative discarded weight w.r.t. per-site h_x.
-fn build_disordered_kim_jacobian(
-    n: usize,
-    params: KimParams,
-    base_hx: &[f64],
-    pilot_chi: usize,
-    pilot_steps: usize,
-) -> InputJacobian {
-    let factory = move |hx_per_site: &[f64]| -> Mps {
-        let mut mps = Mps::new(n);
-        let chi_per_bond = vec![pilot_chi; n - 1];
-        for _step in 0..pilot_steps {
-            apply_kim_step_disordered(&mut mps, params, hx_per_site, &chi_per_bond).unwrap();
-        }
-        mps
-    };
-
-    let observe = |mps: &Mps| -> Vec<f64> { mps.discarded_weight_per_bond.clone() };
-
-    let cfg = JacobianConfig {
-        delta: 0.02,
-        stride: 1,
-    };
-
-    InputJacobian::compute(base_hx, factory, observe, &cfg)
 }
 
 /// Deterministic Mulberry32-style PRNG so that disordered tests are
@@ -206,114 +176,6 @@ fn stage_b_n12_chi_sweep_uniform() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: build a Jacobian for the kicked Ising model using per-site
-// transverse-field (h_x) perturbations as the input axis. The Jacobian
-// outputs are per-bond cumulative discarded weight after a pilot run at
-// the supplied (small) χ. h_x is the right perturbation axis because it
-// directly drives entanglement growth — h_z perturbations are diagonal in
-// the computational basis and produce identically-zero Jacobians on the
-// discarded-weight observable.
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn build_kim_jacobian(n: usize, params: KimParams, pilot_chi: usize, pilot_steps: usize) -> InputJacobian {
-    let base_hx: Vec<f64> = vec![params.h_x; n];
-
-    let factory = move |hx_per_site: &[f64]| -> Mps {
-        let mut mps = Mps::new(n);
-        let chi_per_bond = vec![pilot_chi; n - 1];
-        for _step in 0..pilot_steps {
-            // ZZ entangling layer with global J
-            let zz_angle = params.j * params.dt;
-            let zz_angles: Vec<f64> = vec![zz_angle; n.saturating_sub(1)];
-            mps.apply_two_qubit_layer_parallel(huoma::mps::zz(0.0), &chi_per_bond, &zz_angles)
-                .unwrap();
-            // Site-dependent RX kick
-            let rx_layer: Vec<_> = (0..n)
-                .map(|i| huoma::mps::rx(2.0 * hx_per_site[i] * params.dt))
-                .collect();
-            mps.apply_single_layer(&rx_layer);
-        }
-        mps
-    };
-
-    let observe = |mps: &Mps| -> Vec<f64> { mps.discarded_weight_per_bond.clone() };
-
-    let cfg = JacobianConfig {
-        delta: 0.02,
-        stride: 1,
-    };
-
-    InputJacobian::compute(&base_hx, factory, observe, &cfg)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STAGE C — N=12, Jacobian-allocated χ vs uniform χ at matched budget
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn stage_c_n12_jacobian_vs_uniform() {
-    let n = 12;
-    let n_steps = 10;
-    let params = KimParams::self_dual();
-
-    println!("\n  ══════════════════════════════════════════════════════════════════");
-    println!("  Stage C: N={n}, Jacobian-allocated χ vs uniform χ");
-    println!("  ══════════════════════════════════════════════════════════════════\n");
-
-    let ref_history = reference_kim_run(n, params, n_steps);
-
-    let pilot_chi = 4; // small enough to force truncation in the pilot
-    let pilot_steps = n_steps;
-
-    let t_jac = Instant::now();
-    let jacobian = build_kim_jacobian(n, params, pilot_chi, pilot_steps);
-    let jac_ms = t_jac.elapsed().as_secs_f64() * 1000.0;
-    println!(
-        "  Jacobian build: {jac_ms:.2} ms ({} inputs × {} outputs, pilot χ={pilot_chi}, pilot steps={pilot_steps})",
-        jacobian.n_inputs, jacobian.n_outputs
-    );
-
-    println!(
-        "\n  {:>8} | {:>14} {:>10} | {:>14} {:>10}",
-        "χ range", "jac max_err", "jac budget", "uniform err", "uni budget"
-    );
-    println!("  {}", "-".repeat(64));
-
-    for &chi_min in &[2_usize] {
-        for &chi_max in &[6, 8, 12, 16] {
-            let chi_jacobian = chi_allocation_from_jacobian(
-                &jacobian,
-                chi_min,
-                chi_max,
-                JacobianAllocation::ParticipationRatio,
-            );
-
-            let chi_uniform_avg = {
-                let total: usize = chi_jacobian.iter().sum();
-                let n_bonds = chi_jacobian.len();
-                (total / n_bonds).max(chi_min)
-            };
-            let chi_uniform = vec![chi_uniform_avg; n - 1];
-
-            let (_mps_j, hist_j) = run_mps_kim(n, params, n_steps, &chi_jacobian);
-            let (_mps_u, hist_u) = run_mps_kim(n, params, n_steps, &chi_uniform);
-
-            let err_j = history_max_err(&ref_history, &hist_j);
-            let err_u = history_max_err(&ref_history, &hist_u);
-
-            let budget_j: usize = chi_jacobian.iter().sum();
-            let budget_u: usize = chi_uniform.iter().sum();
-
-            println!(
-                "  [{:>2}..{:>2}] | {:>14.3e} {:>10} | {:>14.3e} {:>10}",
-                chi_min, chi_max, err_j, budget_j, err_u, budget_u
-            );
-        }
-    }
-    println!();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // STAGE D — N=24, exact statevector reference (16M-dim) vs huoma
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -359,112 +221,15 @@ fn stage_d_n24_full_chi_matches_reference() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAGE E — N=50 — Negative control: on a translation-invariant kicked
-// Ising chain the Jacobian should NOT beat uniform-χ, because there is no
-// inhomogeneity for it to exploit. This stage documents that null result
-// honestly. The matched test that Jacobian *should* win on is Stage F
-// (disordered KIM) below.
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn stage_e_homogeneous_negative_control() {
-    let n_steps = 8;
-    let params = KimParams::self_dual();
-
-    println!("\n  ══════════════════════════════════════════════════════════════════");
-    println!("  Stage E: NEGATIVE control — homogeneous self-dual KIM, N=50");
-    println!("  Expectation: jacobian ≈ uniform (no inhomogeneity to exploit)");
-    println!("  {n_steps} Trotter steps; reference = MPS at high χ_max");
-    println!("  ══════════════════════════════════════════════════════════════════\n");
-
-    println!(
-        "  {:>4} | {:>14} | {:>14} {:>12} | {:>14} {:>12}",
-        "N", "strategy", "max ⟨Z⟩ err", "budget", "wall ms", "max bond"
-    );
-    println!("  {}", "-".repeat(80));
-
-    let chi_ceiling = 8_usize;
-    let chi_min_jac = 2_usize;
-    let chi_ref = 64_usize;
-
-    for &n in &[50_usize] {
-        // ── Reference: high-χ MPS run ───────────────────────────────────
-        let chi_ref_per_bond = vec![chi_ref; n - 1];
-        let t = Instant::now();
-        let (mps_ref, hist_ref) = run_mps_kim(n, params, n_steps, &chi_ref_per_bond);
-        let ms_ref = t.elapsed().as_secs_f64() * 1000.0;
-        let mb_ref = mps_ref.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>14} | {:>14} {:>12} | {:>14.2} {:>12}",
-            n,
-            format!("ref χ={chi_ref}"),
-            "—",
-            chi_ref * (n - 1),
-            ms_ref,
-            mb_ref
-        );
-
-        // ── Uniform baseline at chi_ceiling ─────────────────────────────
-        let chi_uniform = vec![chi_ceiling; n - 1];
-        let t = Instant::now();
-        let (mps_u, hist_u) = run_mps_kim(n, params, n_steps, &chi_uniform);
-        let ms_u = t.elapsed().as_secs_f64() * 1000.0;
-        let mb_u = mps_u.bond_dims().iter().max().copied().unwrap_or(0);
-        let err_u = history_max_err(&hist_ref, &hist_u);
-        let budget_u: usize = chi_uniform.iter().sum();
-        println!(
-            "  {:>4} | {:>14} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
-            n,
-            format!("uniform χ={chi_ceiling}"),
-            err_u,
-            budget_u,
-            ms_u,
-            mb_u
-        );
-
-        // ── Jacobian: pilot at small χ, allocate up to chi_ceiling ──────
-        let pilot_chi = 4;
-        let pilot_steps = n_steps;
-        let t_jac = Instant::now();
-        let jacobian = build_kim_jacobian(n, params, pilot_chi, pilot_steps);
-        let jac_build_ms = t_jac.elapsed().as_secs_f64() * 1000.0;
-
-        let chi_jacobian = chi_allocation_from_jacobian(
-            &jacobian,
-            chi_min_jac,
-            chi_ceiling,
-            JacobianAllocation::ParticipationRatio,
-        );
-
-        let t = Instant::now();
-        let (mps_j, hist_j) = run_mps_kim(n, params, n_steps, &chi_jacobian);
-        let ms_j = t.elapsed().as_secs_f64() * 1000.0;
-        let mb_j = mps_j.bond_dims().iter().max().copied().unwrap_or(0);
-        let err_j = history_max_err(&hist_ref, &hist_j);
-        let budget_j: usize = chi_jacobian.iter().sum();
-        println!(
-            "  {:>4} | {:>14} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (jac build {:.1}ms)",
-            n,
-            format!("jacobian [{}..{}]", chi_min_jac, chi_ceiling),
-            err_j,
-            budget_j,
-            ms_j,
-            mb_j,
-            jac_build_ms
-        );
-        println!();
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // STAGE F — Disordered self-dual KIM, N=14 (statevector reference) and
 // N=50 (high-χ MPS reference). Each site has h_x = π/4 + δ_i with δ_i drawn
-// from a fixed-seed uniform distribution. The site-by-site disorder is the
-// inhomogeneity that the Jacobian-allocator can exploit.
+// from a fixed-seed uniform distribution. Compares uniform-χ vs the
+// production sin(C/2) allocator (chi_allocation_sinc) at matched total
+// budget.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn stage_f_disordered_jacobian_wins() {
+fn stage_f_disordered_sinc_vs_uniform() {
     let params = KimParams::self_dual();
     let n_steps = 8;
     let disorder_amplitude = 0.5; // δ ∈ [-0.5, 0.5] around h_x = π/4
@@ -472,7 +237,7 @@ fn stage_f_disordered_jacobian_wins() {
 
     println!("\n  ══════════════════════════════════════════════════════════════════");
     println!("  Stage F: DISORDERED self-dual KIM (h_x site-disorder ±{disorder_amplitude})");
-    println!("  Expectation: jacobian < uniform on max ⟨Z⟩ error at matched budget");
+    println!("  uniform χ vs sin(C/2)-allocated χ at matched total budget");
     println!("  ══════════════════════════════════════════════════════════════════\n");
 
     println!(
@@ -486,11 +251,10 @@ fn stage_f_disordered_jacobian_wins() {
         let n = 14_usize;
         let h_x_per_site = det_random_hx(n, seed, params.h_x, disorder_amplitude);
         let chi_ceiling = 8_usize; // uniform baseline
-        let chi_min_jac = 2_usize;
-        // Allocator upper bound > uniform average so water-filling has room
-        // to redistribute within the same total budget. With chi_max_jac = 12,
-        // a single bond can take 12 if a pair of other bonds drops to 2 + 6.
-        let chi_max_jac = 12_usize;
+        // Allocator bounds must bracket budget / n_bonds (= chi_ceiling) so
+        // that water-filling has room to produce non-uniform allocations.
+        let chi_min_alloc = 2_usize;
+        let chi_max_alloc = 12_usize;
 
         let t = Instant::now();
         let hist_ref = reference_kim_run_disordered(n, params, &h_x_per_site, n_steps);
@@ -518,107 +282,14 @@ fn stage_f_disordered_jacobian_wins() {
             mb_u
         );
 
-        let pilot_chi = 4;
-        let t_jac = Instant::now();
-        let jacobian =
-            build_disordered_kim_jacobian(n, params, &h_x_per_site, pilot_chi, n_steps);
-        let jac_build_ms = t_jac.elapsed().as_secs_f64() * 1000.0;
-        let chi_jacobian = chi_allocation_from_jacobian(
-            &jacobian,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::ParticipationRatio,
-        );
-
-        let t = Instant::now();
-        let (mps_j, hist_j) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jacobian);
-        let ms_j = t.elapsed().as_secs_f64() * 1000.0;
-        let err_j = history_max_err(&hist_ref, &hist_j);
-        let budget_j: usize = chi_jacobian.iter().sum();
-        let mb_j = mps_j.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (jac build {:.1}ms)",
-            n,
-            format!("jac legacy [{}..{}]", chi_min_jac, chi_max_jac),
-            err_j,
-            budget_j,
-            ms_j,
-            mb_j,
-            jac_build_ms
-        );
-        println!("    legacy chi profile: {:?}", chi_jacobian);
-
-        // ── A.1: matched-budget Jacobian via water-filling ──────────────
-        // Take the uniform-χ budget as a hard constraint and ask the
-        // Jacobian-PR allocator to spend exactly that, no more, no less.
-        // Allocator bounds [chi_min_jac .. chi_max_jac] must strictly
-        // bracket budget / n_bonds so that non-uniform allocations exist.
-        let chi_jac_matched = chi_allocation_from_jacobian_target_budget(
-            &jacobian,
-            budget_u,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::ParticipationRatio,
-        );
-        let t = Instant::now();
-        let (mps_jm, hist_jm) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched);
-        let ms_jm = t.elapsed().as_secs_f64() * 1000.0;
-        let err_jm = history_max_err(&hist_ref, &hist_jm);
-        let budget_jm: usize = chi_jac_matched.iter().sum();
-        let mb_jm = mps_jm.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
-            n,
-            "jac matched PR",
-            err_jm,
-            budget_jm,
-            ms_jm,
-            mb_jm
-        );
-        println!("    matched chi profile: {:?}", chi_jac_matched);
-
-        // ── A.1 with TotalSensitivity score, same matched budget ────────
-        let chi_jac_matched_l1 = chi_allocation_from_jacobian_target_budget(
-            &jacobian,
-            budget_u,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::TotalSensitivity,
-        );
-        let t = Instant::now();
-        let (mps_jl, hist_jl) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched_l1);
-        let ms_jl = t.elapsed().as_secs_f64() * 1000.0;
-        let err_jl = history_max_err(&hist_ref, &hist_jl);
-        let budget_jl: usize = chi_jac_matched_l1.iter().sum();
-        let mb_jl = mps_jl.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
-            n,
-            "jac matched L1",
-            err_jl,
-            budget_jl,
-            ms_jl,
-            mb_jl
-        );
-        println!("    matched-L1 chi profile: {:?}", chi_jac_matched_l1);
-
-        // ── A.1 with sin(C/2) channel weights, same matched budget ──────
-        // The natural per-site frequency for the kicked Ising is the
-        // transverse-field rotation rate h_x_i. ChannelMap computes per-
-        // bond commensurability-weighted sensitivity from pairwise
-        // sin(C_ij/2) over a local neighbourhood (radius 5). No pilot,
-        // no censoring — just O(N · radius²) arithmetic.
+        // ── sin(C/2) at matched total budget ────────────────────────────
         let t_ch = Instant::now();
-        let cm = ChannelMap::from_frequencies_sparse(&h_x_per_site, 1.0, 5);
-        let sinc_scores: Vec<f64> = (0..n - 1).map(|b| cm.bond_weight(b)).collect();
-        let chi_sinc = chi_allocation_target_budget(
-            &sinc_scores,
+        let chi_sinc = chi_allocation_sinc_with_radius(
+            &h_x_per_site,
+            5,
             budget_u,
-            chi_min_jac,
-            chi_max_jac,
+            chi_min_alloc,
+            chi_max_alloc,
         );
         let ch_build_ms = t_ch.elapsed().as_secs_f64() * 1000.0;
         let t = Instant::now();
@@ -633,7 +304,6 @@ fn stage_f_disordered_jacobian_wins() {
             n, "sinc2 matched", err_s, budget_s, ms_s, mb_s, ch_build_ms
         );
         println!("    sinc2 chi profile: {:?}", chi_sinc);
-        println!("    sinc2 raw scores:  {:?}", sinc_scores);
         println!();
     }
 
@@ -642,8 +312,8 @@ fn stage_f_disordered_jacobian_wins() {
         let n = 50_usize;
         let h_x_per_site = det_random_hx(n, seed, params.h_x, disorder_amplitude);
         let chi_ceiling = 8_usize;
-        let chi_min_jac = 2_usize;
-        let chi_max_jac = 12_usize;
+        let chi_min_alloc = 2_usize;
+        let chi_max_alloc = 12_usize;
         let chi_ref = 64_usize;
 
         let chi_ref_per_bond = vec![chi_ref; n - 1];
@@ -680,84 +350,14 @@ fn stage_f_disordered_jacobian_wins() {
             mb_u
         );
 
-        let pilot_chi = 4;
-        let t_jac = Instant::now();
-        let jacobian =
-            build_disordered_kim_jacobian(n, params, &h_x_per_site, pilot_chi, n_steps);
-        let jac_build_ms = t_jac.elapsed().as_secs_f64() * 1000.0;
-        let chi_jacobian = chi_allocation_from_jacobian(
-            &jacobian,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::ParticipationRatio,
-        );
-
-        let t = Instant::now();
-        let (mps_j, hist_j) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jacobian);
-        let ms_j = t.elapsed().as_secs_f64() * 1000.0;
-        let err_j = history_max_err(&hist_ref, &hist_j);
-        let budget_j: usize = chi_jacobian.iter().sum();
-        let mb_j = mps_j.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (jac build {:.1}ms)",
-            n,
-            format!("jac legacy [{}..{}]", chi_min_jac, chi_max_jac),
-            err_j,
-            budget_j,
-            ms_j,
-            mb_j,
-            jac_build_ms
-        );
-
-        // ── A.1: matched-budget Jacobian water-filling, PR + L1 ─────────
-        let chi_jac_matched = chi_allocation_from_jacobian_target_budget(
-            &jacobian,
-            budget_u,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::ParticipationRatio,
-        );
-        let t = Instant::now();
-        let (mps_jm, hist_jm) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched);
-        let ms_jm = t.elapsed().as_secs_f64() * 1000.0;
-        let err_jm = history_max_err(&hist_ref, &hist_jm);
-        let budget_jm: usize = chi_jac_matched.iter().sum();
-        let mb_jm = mps_jm.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
-            n, "jac matched PR", err_jm, budget_jm, ms_jm, mb_jm
-        );
-
-        let chi_jac_matched_l1 = chi_allocation_from_jacobian_target_budget(
-            &jacobian,
-            budget_u,
-            chi_min_jac,
-            chi_max_jac,
-            JacobianAllocation::TotalSensitivity,
-        );
-        let t = Instant::now();
-        let (mps_jl, hist_jl) =
-            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_jac_matched_l1);
-        let ms_jl = t.elapsed().as_secs_f64() * 1000.0;
-        let err_jl = history_max_err(&hist_ref, &hist_jl);
-        let budget_jl: usize = chi_jac_matched_l1.iter().sum();
-        let mb_jl = mps_jl.bond_dims().iter().max().copied().unwrap_or(0);
-        println!(
-            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
-            n, "jac matched L1", err_jl, budget_jl, ms_jl, mb_jl
-        );
-
-        // ── A.1 with sin(C/2) channel weights, same matched budget ──────
+        // ── sin(C/2) at matched total budget ────────────────────────────
         let t_ch = Instant::now();
-        let cm = ChannelMap::from_frequencies_sparse(&h_x_per_site, 1.0, 5);
-        let sinc_scores: Vec<f64> = (0..n - 1).map(|b| cm.bond_weight(b)).collect();
-        let chi_sinc = chi_allocation_target_budget(
-            &sinc_scores,
+        let chi_sinc = chi_allocation_sinc_with_radius(
+            &h_x_per_site,
+            5,
             budget_u,
-            chi_min_jac,
-            chi_max_jac,
+            chi_min_alloc,
+            chi_max_alloc,
         );
         let ch_build_ms = t_ch.elapsed().as_secs_f64() * 1000.0;
         let t = Instant::now();
