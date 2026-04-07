@@ -258,6 +258,142 @@ pub fn chi_allocation_from_jacobian(
         .collect()
 }
 
+/// Allocate a per-bond χ profile that **exactly** consumes the supplied
+/// `total_budget`, distributing it across bonds in proportion to a
+/// non-negative per-bond `scores` vector subject to `χ_k ∈ [chi_min, chi_max]`.
+///
+/// This is the integer water-filling solution to
+///
+/// ```text
+///   maximise   Σ_k score_k · log(χ_k)
+///   subject to Σ_k χ_k = total_budget
+///              chi_min ≤ χ_k ≤ chi_max
+/// ```
+///
+/// which is equivalent to "make χ_k proportional to score_k", clipped to
+/// the bounds. The greedy increments the bond with the largest marginal
+/// utility `score_k / (χ_k + 1)` at every step until the budget is spent.
+///
+/// Behaviour at the corners:
+/// - `total_budget < n · chi_min`: returns all `chi_min` (under-budget signal).
+/// - `total_budget > n · chi_max`: returns all `chi_max` (over-budget signal).
+/// - All-zero / non-finite scores: returns the most-uniform integer
+///   allocation that consumes the budget exactly.
+/// - Empty `scores`: returns an empty vector.
+///
+/// Score-agnostic: pass it Jacobian-derived scores, sin(C/2) channel weights,
+/// or any other non-negative per-bond complexity metric.
+#[must_use]
+pub fn chi_allocation_target_budget(
+    scores: &[f64],
+    total_budget: usize,
+    chi_min: usize,
+    chi_max: usize,
+) -> Vec<usize> {
+    let n = scores.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    assert!(chi_min >= 1, "chi_min must be ≥ 1, got {chi_min}");
+    assert!(
+        chi_min <= chi_max,
+        "chi_min ({chi_min}) must be ≤ chi_max ({chi_max})"
+    );
+
+    let min_budget = n.saturating_mul(chi_min);
+    let max_budget = n.saturating_mul(chi_max);
+    if total_budget <= min_budget {
+        return vec![chi_min; n];
+    }
+    if total_budget >= max_budget {
+        return vec![chi_max; n];
+    }
+
+    let mut chi = vec![chi_min; n];
+    let mut remaining = total_budget - min_budget;
+
+    // Sanitize scores: NaN/negative → 0.
+    let clean: Vec<f64> = scores
+        .iter()
+        .map(|&s| if s.is_finite() && s > 0.0 { s } else { 0.0 })
+        .collect();
+    let total_score: f64 = clean.iter().sum();
+
+    if total_score <= 0.0 {
+        // No discriminating signal: spread the surplus as evenly as possible.
+        let base = remaining / n;
+        let extra = remaining % n;
+        for (k, slot) in chi.iter_mut().enumerate() {
+            let add = base + usize::from(k < extra);
+            *slot = (*slot + add).min(chi_max);
+        }
+        return chi;
+    }
+
+    // Greedy water-filling. Each iteration spends one unit of budget on
+    // whichever non-saturated bond has the largest marginal utility
+    // score_k / (χ_k + 1). For typical Track-A sizes (n ≤ 200, remaining
+    // ≤ a few thousand) the O(remaining · n) loop is well under 1 ms.
+    while remaining > 0 {
+        let mut best_k: Option<usize> = None;
+        let mut best_ratio = f64::NEG_INFINITY;
+        for k in 0..n {
+            if chi[k] >= chi_max {
+                continue;
+            }
+            let s = clean[k];
+            if s <= 0.0 {
+                continue;
+            }
+            let ratio = s / (chi[k] as f64 + 1.0);
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_k = Some(k);
+            }
+        }
+        match best_k {
+            Some(k) => {
+                chi[k] += 1;
+                remaining -= 1;
+            }
+            None => {
+                // All bonds with positive score are saturated; pour the
+                // residual into zero-score bonds (round-robin) so the
+                // total budget is still spent exactly.
+                for k in 0..n {
+                    if remaining == 0 {
+                        break;
+                    }
+                    if chi[k] < chi_max {
+                        chi[k] += 1;
+                        remaining -= 1;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    chi
+}
+
+/// Convenience wrapper: build per-bond Jacobian scores via `strategy` and
+/// then run the target-budget water-filling allocator on them.
+#[must_use]
+pub fn chi_allocation_from_jacobian_target_budget(
+    jacobian: &InputJacobian,
+    total_budget: usize,
+    chi_min: usize,
+    chi_max: usize,
+    strategy: JacobianAllocation,
+) -> Vec<usize> {
+    let scores = match strategy {
+        JacobianAllocation::ParticipationRatio => participation_ratio_profile(jacobian),
+        JacobianAllocation::TotalSensitivity => total_sensitivity_profile(jacobian),
+    };
+    chi_allocation_target_budget(&scores, total_budget, chi_min, chi_max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +486,148 @@ mod tests {
             chi[0] < chi[1],
             "expected chi[local] < chi[global], got {chi:?}"
         );
+    }
+
+    // ─── chi_allocation_target_budget (A.1 water-filling) ──────────────────
+
+    #[test]
+    fn target_budget_empty_input() {
+        assert!(chi_allocation_target_budget(&[], 10, 2, 8).is_empty());
+    }
+
+    #[test]
+    fn target_budget_under_budget_returns_chi_min() {
+        // 4 bonds × chi_min=2 = 8, request 6 → all chi_min.
+        let chi = chi_allocation_target_budget(&[1.0, 1.0, 1.0, 1.0], 6, 2, 8);
+        assert_eq!(chi, vec![2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn target_budget_over_budget_returns_chi_max() {
+        // 4 bonds × chi_max=8 = 32, request 100 → all chi_max.
+        let chi = chi_allocation_target_budget(&[1.0, 1.0, 1.0, 1.0], 100, 2, 8);
+        assert_eq!(chi, vec![8, 8, 8, 8]);
+    }
+
+    #[test]
+    fn target_budget_uniform_scores_split_evenly() {
+        // Equal scores, budget 20 over 4 bonds → exactly 5 each.
+        let chi = chi_allocation_target_budget(&[1.0, 1.0, 1.0, 1.0], 20, 2, 8);
+        assert_eq!(chi.iter().sum::<usize>(), 20);
+        // All bonds within ±1 of perfectly even.
+        let max = *chi.iter().max().unwrap();
+        let min = *chi.iter().min().unwrap();
+        assert!(max - min <= 1, "uniform scores produced non-flat: {chi:?}");
+    }
+
+    #[test]
+    fn target_budget_proportional_to_scores() {
+        // Scores [3, 1] over 2 bonds, budget 8, [chi_min=1, chi_max=100].
+        // Linear-proportional ideal: 6 above floor split 4.5 / 1.5,
+        // ceiled-to-integer water-filling gives 6/2.
+        let chi = chi_allocation_target_budget(&[3.0, 1.0], 8, 1, 100);
+        assert_eq!(chi.iter().sum::<usize>(), 8);
+        assert!(chi[0] > chi[1], "high-score bond should get more: {chi:?}");
+        // Ratio sanity: bond 0 should get at least 2× bond 1.
+        assert!(chi[0] >= 2 * chi[1], "ratio too narrow: {chi:?}");
+    }
+
+    #[test]
+    fn target_budget_exactly_consumes_budget() {
+        // Random-looking scores, no saturation: total must equal budget.
+        let scores = vec![0.1, 0.5, 0.2, 0.9, 0.3, 0.7];
+        for budget in [12, 20, 30, 40] {
+            let chi = chi_allocation_target_budget(&scores, budget, 2, 16);
+            assert_eq!(
+                chi.iter().sum::<usize>(),
+                budget,
+                "budget mismatch at {budget}: {chi:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_budget_respects_bounds() {
+        let scores = vec![0.0, 100.0, 0.0, 100.0];
+        let chi = chi_allocation_target_budget(&scores, 20, 2, 8);
+        assert_eq!(chi.iter().sum::<usize>(), 20);
+        for &c in &chi {
+            assert!(c >= 2 && c <= 8, "out of bounds: {c} in {chi:?}");
+        }
+        // Zero-score bonds should sit at chi_min, high-score bonds at chi_max
+        // (8+8+2+2 = 20 — exactly fits).
+        assert_eq!(chi, vec![2, 8, 2, 8]);
+    }
+
+    #[test]
+    fn target_budget_zero_scores_distribute_evenly() {
+        // No discriminating signal: must still spend the budget exactly.
+        let chi = chi_allocation_target_budget(&[0.0, 0.0, 0.0], 12, 2, 8);
+        assert_eq!(chi.iter().sum::<usize>(), 12);
+        let max = *chi.iter().max().unwrap();
+        let min = *chi.iter().min().unwrap();
+        assert!(max - min <= 1, "zero scores produced non-flat: {chi:?}");
+    }
+
+    #[test]
+    fn target_budget_handles_nan_scores() {
+        let scores = vec![1.0, f64::NAN, 1.0, f64::NEG_INFINITY];
+        let chi = chi_allocation_target_budget(&scores, 14, 2, 8);
+        assert_eq!(chi.iter().sum::<usize>(), 14);
+        // NaN/-inf bonds should be treated as zero-score → sit at chi_min,
+        // unless saturating bonds force overflow into them.
+        // Finite-score bonds (0, 2) should get at least chi_min+1.
+        assert!(chi[0] >= chi[1], "NaN bond should not exceed finite: {chi:?}");
+        assert!(chi[2] >= chi[3], "neg-inf bond should not exceed finite: {chi:?}");
+    }
+
+    #[test]
+    fn target_budget_saturated_high_score_bonds_overflow_into_low_score() {
+        // Two bonds with score 100 saturate at chi_max=4 each (=8 total),
+        // remaining budget 4 must go to the zero-score bonds.
+        let scores = vec![100.0, 100.0, 0.0, 0.0];
+        let chi = chi_allocation_target_budget(&scores, 12, 2, 4);
+        assert_eq!(chi.iter().sum::<usize>(), 12);
+        assert_eq!(chi[0], 4);
+        assert_eq!(chi[1], 4);
+        assert_eq!(chi[2] + chi[3], 4);
+    }
+
+    #[test]
+    fn target_budget_matches_uniform_when_scores_flat() {
+        // The whole point of A.1: same total budget as uniform-χ → identical
+        // allocation when there is no discriminating signal.
+        let n = 10;
+        let scores = vec![1.0; n];
+        let chi_uniform = 8;
+        let budget = n * chi_uniform;
+        let chi = chi_allocation_target_budget(&scores, budget, 2, chi_uniform);
+        assert_eq!(chi, vec![chi_uniform; n]);
+    }
+
+    #[test]
+    fn jacobian_target_budget_wrapper_smoke() {
+        // Same toy Jacobian as the legacy allocator test.
+        let j = InputJacobian {
+            matrix: vec![
+                vec![5.0, 0.0, 0.0, 0.0], // local
+                vec![1.0, 1.0, 1.0, 1.0], // global
+            ],
+            n_inputs: 4,
+            n_outputs: 2,
+            delta: 1e-3,
+            stride: 1,
+        };
+        let budget = 12;
+        let chi = chi_allocation_from_jacobian_target_budget(
+            &j,
+            budget,
+            2,
+            10,
+            JacobianAllocation::ParticipationRatio,
+        );
+        assert_eq!(chi.len(), 2);
+        assert_eq!(chi.iter().sum::<usize>(), budget);
+        assert!(chi[1] > chi[0], "global bond (high PR) should win: {chi:?}");
     }
 }
