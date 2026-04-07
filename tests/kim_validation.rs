@@ -16,9 +16,10 @@
 //! - **E** N=50, 100, 200 — no exact reference. Compare uniform-χ vs
 //!         Jacobian-χ for total discarded weight and observable stability.
 
+use huoma::channel::ChannelMap;
 use huoma::finite_difference_jacobian::{
-    chi_allocation_from_jacobian, chi_allocation_from_jacobian_target_budget, InputJacobian,
-    JacobianAllocation, JacobianConfig,
+    chi_allocation_from_jacobian, chi_allocation_from_jacobian_target_budget,
+    chi_allocation_target_budget, InputJacobian, JacobianAllocation, JacobianConfig,
 };
 use huoma::kicked_ising::{
     apply_kim_step, apply_kim_step_disordered, reference_kim_run,
@@ -603,6 +604,36 @@ fn stage_f_disordered_jacobian_wins() {
             mb_jl
         );
         println!("    matched-L1 chi profile: {:?}", chi_jac_matched_l1);
+
+        // ── A.1 with sin(C/2) channel weights, same matched budget ──────
+        // The natural per-site frequency for the kicked Ising is the
+        // transverse-field rotation rate h_x_i. ChannelMap computes per-
+        // bond commensurability-weighted sensitivity from pairwise
+        // sin(C_ij/2) over a local neighbourhood (radius 5). No pilot,
+        // no censoring — just O(N · radius²) arithmetic.
+        let t_ch = Instant::now();
+        let cm = ChannelMap::from_frequencies_sparse(&h_x_per_site, 1.0, 5);
+        let sinc_scores: Vec<f64> = (0..n - 1).map(|b| cm.bond_weight(b)).collect();
+        let chi_sinc = chi_allocation_target_budget(
+            &sinc_scores,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+        );
+        let ch_build_ms = t_ch.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (mps_s, hist_s) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_sinc);
+        let ms_s = t.elapsed().as_secs_f64() * 1000.0;
+        let err_s = history_max_err(&hist_ref, &hist_s);
+        let budget_s: usize = chi_sinc.iter().sum();
+        let mb_s = mps_s.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (sinc2 build {:.2}ms)",
+            n, "sinc2 matched", err_s, budget_s, ms_s, mb_s, ch_build_ms
+        );
+        println!("    sinc2 chi profile: {:?}", chi_sinc);
+        println!("    sinc2 raw scores:  {:?}", sinc_scores);
         println!();
     }
 
@@ -716,6 +747,29 @@ fn stage_f_disordered_jacobian_wins() {
         println!(
             "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}",
             n, "jac matched L1", err_jl, budget_jl, ms_jl, mb_jl
+        );
+
+        // ── A.1 with sin(C/2) channel weights, same matched budget ──────
+        let t_ch = Instant::now();
+        let cm = ChannelMap::from_frequencies_sparse(&h_x_per_site, 1.0, 5);
+        let sinc_scores: Vec<f64> = (0..n - 1).map(|b| cm.bond_weight(b)).collect();
+        let chi_sinc = chi_allocation_target_budget(
+            &sinc_scores,
+            budget_u,
+            chi_min_jac,
+            chi_max_jac,
+        );
+        let ch_build_ms = t_ch.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let (mps_s, hist_s) =
+            run_mps_kim_disordered(n, params, &h_x_per_site, n_steps, &chi_sinc);
+        let ms_s = t.elapsed().as_secs_f64() * 1000.0;
+        let err_s = history_max_err(&hist_ref, &hist_s);
+        let budget_s: usize = chi_sinc.iter().sum();
+        let mb_s = mps_s.bond_dims().iter().max().copied().unwrap_or(0);
+        println!(
+            "  {:>4} | {:>16} | {:>14.3e} {:>12} | {:>14.2} {:>12}    (sinc2 build {:.2}ms)",
+            n, "sinc2 matched", err_s, budget_s, ms_s, mb_s, ch_build_ms
         );
         println!();
     }
