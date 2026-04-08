@@ -26,6 +26,7 @@ pub mod kicked_ising;
 pub mod mps;
 pub mod partition;
 pub mod reassembly;
+pub mod topology;
 
 // Production-recommended χ allocators, re-exported at crate root.
 pub use allocator::{
