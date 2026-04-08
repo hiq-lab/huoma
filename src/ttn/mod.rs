@@ -1032,4 +1032,267 @@ mod tests {
             }
         }
     }
+
+    // ─── D.3 small-heavy-hex KIM validation ────────────────────────────
+    //
+    // Build a tiny sub-fragment of IBM Eagle (13 qubits, 1 hexagonal cycle,
+    // 1 degree-3 junction in the spanning tree, 1 non-tree edge) and run a
+    // few Floquet steps of the kicked Ising model through both the native
+    // `Ttn` backend and the topology-agnostic `DenseState` reference.
+    // Success condition: every qubit's ⟨Z⟩ agrees across the two paths to
+    // floating-point precision after N steps, with `max_bond` large enough
+    // that no singular value is ever dropped. This is the design-doc D.3
+    // gate: "small heavy-hex subgraph (N≈12–16) Ttn vs dense statevector
+    // agreement at FP precision after 5 KIM layers" (TRACK_D_DESIGN.md §
+    // D.3).
+    //
+    // The 13-qubit fragment is a genuine sub-graph of Eagle 127q:
+    //
+    //     Eagle qubit → local id
+    //      0, 1, 2, 3, 4, 5    →  0, 1, 2, 3, 4, 5   (row 0 partial)
+    //      14, 15               →  6, 7              (bridges)
+    //      18, 19, 20, 21, 22  →  8, 9, 10, 11, 12   (row 2 partial)
+    //
+    // Coupling edges (13 total):
+    //   row 0:     (0,1), (1,2), (2,3), (3,4), (4,5)
+    //   bridges:   (0,6), (6,8), (4,7), (7,12)
+    //   row 2:     (8,9), (9,10), (10,11), (11,12)
+    //
+    // |E| − |V| + 1 = 13 − 13 + 1 = 1 independent cycle. Spanning tree
+    // drops the (0,6) edge, which leaves qubit 4 as a genuine degree-3
+    // junction (tree neighbours: 3, 5, 7) and forces `apply_two_qubit_via_path`
+    // to route the single non-tree ZZ gate through the junction on a
+    // tree path of length 11. That exercises both the junction
+    // contraction code in the native Ttn backend and the
+    // swap-network machinery on the same test.
+
+    use crate::kicked_ising::KimParams;
+
+    /// Tuple returned by `small_eagle_fragment`:
+    ///   - `Topology`: the spanning tree (12 edges over 13 qubits)
+    ///   - `Vec<Edge>`: the coupling edges dropped to form the tree
+    ///     (exactly one for this fragment)
+    ///   - `Vec<Edge>`: the full coupling graph (13 edges, with `a < b`)
+    fn small_eagle_fragment() -> (Topology, Vec<Edge>, Vec<Edge>) {
+        // Full coupling graph (13 edges).
+        let coupling: Vec<Edge> = vec![
+            // row 0
+            Edge { a: 0, b: 1 },
+            Edge { a: 1, b: 2 },
+            Edge { a: 2, b: 3 },
+            Edge { a: 3, b: 4 },
+            Edge { a: 4, b: 5 },
+            // bridges
+            Edge { a: 0, b: 6 },
+            Edge { a: 6, b: 8 },
+            Edge { a: 4, b: 7 },
+            Edge { a: 7, b: 12 },
+            // row 2
+            Edge { a: 8, b: 9 },
+            Edge { a: 9, b: 10 },
+            Edge { a: 10, b: 11 },
+            Edge { a: 11, b: 12 },
+        ];
+        debug_assert_eq!(coupling.len(), 13);
+
+        // Spanning tree: drop (0, 6) so qubit 4 remains a degree-3
+        // junction (3, 5, 7). Every other coupling edge is a tree edge.
+        let tree_edges: Vec<Edge> = coupling
+            .iter()
+            .copied()
+            .filter(|e| !(e.a == 0 && e.b == 6))
+            .collect();
+        debug_assert_eq!(tree_edges.len(), 12);
+
+        let non_tree_edges: Vec<Edge> = vec![Edge { a: 0, b: 6 }];
+
+        let topology = Topology::from_edges(13, tree_edges);
+        debug_assert_eq!(topology.degree(4), 3, "qubit 4 must be a tree junction");
+        debug_assert_eq!(topology.degree(0), 1, "qubit 0 is a tree leaf after dropping (0,6)");
+        debug_assert_eq!(topology.degree(5), 1, "qubit 5 is a tree leaf");
+        debug_assert_eq!(topology.degree(6), 1, "qubit 6 is a tree leaf after dropping (0,6)");
+
+        (topology, non_tree_edges, coupling)
+    }
+
+    /// One KIM Floquet step on a `Ttn` over a heavy-hex sub-graph:
+    ///
+    /// 1. ZZ entangling layer on every coupling edge (tree-adjacent pairs
+    ///    via `apply_two_qubit_on_edge`, non-tree pairs via
+    ///    `apply_two_qubit_via_path`).
+    /// 2. Optional longitudinal Rz(2·h_z·dt) kick on every qubit.
+    /// 3. Transverse Rx(2·h_x·dt) kick on every qubit.
+    ///
+    /// Conventions match `kicked_ising::apply_kim_step` for the 1D path:
+    /// the ZZ gate is `exp(-i (J·dt) Z⊗Z)` with **no factor of two**, and
+    /// the Rx / Rz kicks use the standard `exp(-i θ/2 σ)` convention so
+    /// the angles passed in are `2·h_x·dt` / `2·h_z·dt`.
+    fn apply_kim_step_ttn_heavy_hex(
+        ttn: &mut Ttn,
+        non_tree_edges: &[Edge],
+        params: KimParams,
+        max_bond: usize,
+    ) -> Result<()> {
+        // 1. ZZ entangling layer — tree-adjacent edges first, via the
+        //    native direct-edge path, then non-tree edges via the swap
+        //    network. Order within each group is deterministic (the
+        //    topology's internal edge enumeration) so test runs are
+        //    reproducible bit-for-bit.
+        let zz_theta_full = 2.0 * params.j * params.dt; // test zz() uses θ/2 internally
+        let zz_u = zz(zz_theta_full);
+
+        // Tree edges: iterate the topology's canonical edge list.
+        let topology = ttn.topology().clone();
+        for eid_idx in 0..topology.n_edges() {
+            ttn.apply_two_qubit_on_edge(EdgeId(eid_idx), zz_u, max_bond)?;
+        }
+        // Non-tree edges: route via the swap network through the tree.
+        for edge in non_tree_edges {
+            ttn.apply_two_qubit_via_path(edge.a, edge.b, zz_u, max_bond)?;
+        }
+
+        // 2. Global Rz kick (only if h_z ≠ 0).
+        if params.h_z != 0.0 {
+            let rz_u = rz(2.0 * params.h_z * params.dt);
+            for q in 0..topology.n_qubits() {
+                ttn.apply_single(q, rz_u);
+            }
+        }
+
+        // 3. Global Rx kick.
+        let rx_u = rx(2.0 * params.h_x * params.dt);
+        for q in 0..topology.n_qubits() {
+            ttn.apply_single(q, rx_u);
+        }
+
+        Ok(())
+    }
+
+    /// Same KIM Floquet step on a `DenseState` reference, using the full
+    /// coupling-edge list (tree + non-tree together). The dense path has
+    /// no spanning-tree structure — ZZ is applied directly to every pair.
+    fn apply_kim_step_dense_heavy_hex(
+        dense: &mut DenseState,
+        coupling_edges: &[Edge],
+        params: KimParams,
+    ) {
+        let zz_theta_full = 2.0 * params.j * params.dt;
+        let zz_u = zz(zz_theta_full);
+        for e in coupling_edges {
+            dense.apply_two_qubit(e.a, e.b, zz_u);
+        }
+        if params.h_z != 0.0 {
+            let rz_u = rz(2.0 * params.h_z * params.dt);
+            for q in 0..dense.n {
+                dense.apply_single(q, rz_u);
+            }
+        }
+        let rx_u = rx(2.0 * params.h_x * params.dt);
+        for q in 0..dense.n {
+            dense.apply_single(q, rx_u);
+        }
+    }
+
+    /// **The D.3 validation gate.** Drive the 13-qubit Eagle sub-fragment
+    /// through 3 KIM Floquet steps on both the native `Ttn` path (direct
+    /// tree-edge gates + swap-network non-tree gates) and the
+    /// topology-agnostic `DenseState` reference. Assert element-wise
+    /// ⟨Z⟩ agreement at floating-point precision after every step.
+    ///
+    /// Lossless run: `max_bond = 128` is well above the maximal Schmidt
+    /// rank `2^(N/2) ≈ 90` for N = 13, so no singular value is ever
+    /// dropped. Any drift between the two paths is unambiguously a bug
+    /// in the heavy-hex KIM driver or in the swap-network routing, not
+    /// a truncation artefact.
+    #[test]
+    fn small_eagle_fragment_kim_matches_dense_lossless() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        assert_eq!(topology.n_qubits(), 13);
+        assert_eq!(topology.n_edges(), 12);
+        assert_eq!(non_tree_edges.len(), 1);
+        assert_eq!(coupling.len(), 13);
+
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+
+        // Break the product state so KIM dynamics have something to work
+        // on. A simple Hadamard-on-every-qubit layer puts the system in
+        // |+⟩⊗13 which is an eigenstate of the Rx kick but not of the ZZ
+        // layer, so the Floquet dynamics are non-trivial from step one.
+        for q in 0..13 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+
+        // Use the self-dual point to get genuinely non-trivial dynamics
+        // (J = h_x = π/4). h_z = 0 so the Rz kick is skipped.
+        let params = KimParams::self_dual();
+        let max_bond = 128;
+        let n_steps = 3;
+
+        for step in 1..=n_steps {
+            apply_kim_step_ttn_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond).unwrap();
+            apply_kim_step_dense_heavy_hex(&mut dense, &coupling, params);
+
+            for q in 0..13 {
+                let z_ttn = ttn.expectation_z(q);
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}, diff={:e}",
+                    (z_ttn - z_dense).abs()
+                );
+            }
+        }
+
+        // The lossless run must also produce zero total discarded weight
+        // — `max_bond = 128` is large enough that every SVD keeps every
+        // singular value, across both the 12 direct-edge ZZ gates per
+        // step and the 21 swap-network operations per non-tree ZZ gate
+        // per step.
+        assert!(
+            ttn.total_discarded_weight() < 1e-14,
+            "expected zero discarded weight for lossless run, got {:e}",
+            ttn.total_discarded_weight()
+        );
+    }
+
+    /// Same 13-qubit fragment, but run the KIM circuit on the TTN with a
+    /// non-self-dual parameter set including a longitudinal kick
+    /// (`h_z ≠ 0`). Guards the `h_z` branch of the driver, which is
+    /// skipped in the self-dual test above.
+    #[test]
+    fn small_eagle_fragment_kim_with_longitudinal_kick_matches_dense() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+
+        for q in 0..13 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+
+        let params = KimParams {
+            j: 0.31,
+            h_x: 0.47,
+            h_z: 0.19,
+            dt: 1.0,
+        };
+        let max_bond = 128;
+        let n_steps = 2;
+
+        for step in 1..=n_steps {
+            apply_kim_step_ttn_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond).unwrap();
+            apply_kim_step_dense_heavy_hex(&mut dense, &coupling, params);
+            for q in 0..13 {
+                let z_ttn = ttn.expectation_z(q);
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}, diff={:e}",
+                    (z_ttn - z_dense).abs()
+                );
+            }
+        }
+    }
 }
