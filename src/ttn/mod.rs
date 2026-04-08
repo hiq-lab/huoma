@@ -20,12 +20,14 @@
 
 pub mod contraction;
 pub mod gauge;
+pub mod heavy_hex;
 pub mod site;
 pub mod topology;
 
 #[cfg(test)]
 pub(crate) mod dense;
 
+pub use heavy_hex::HeavyHexLayout;
 pub use topology::{Edge, EdgeId, Topology};
 
 use num_complex::Complex64;
