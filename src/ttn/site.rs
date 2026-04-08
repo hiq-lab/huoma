@@ -82,68 +82,15 @@ impl TtnSite {
     /// given). Returns `(matrix_flat, rows, cols)` with the matrix stored in
     /// row-major order.
     ///
-    /// The row/col axis lists must together cover every axis of the tensor
-    /// exactly once. Internally this is a `permute` followed by a reshape,
-    /// but the permute is done directly into the output buffer to avoid an
-    /// intermediate copy.
+    /// Thin wrapper around the free [`flatten_tensor_raw`] function, which
+    /// is also used by the contraction module on intermediate accumulators
+    /// that don't fit the `TtnSite` "physical-axis-last" invariant.
     pub fn flatten_to_matrix(
         &self,
         row_axes: &[usize],
         col_axes: &[usize],
     ) -> (Vec<C>, usize, usize) {
-        let nd = self.rank();
-        debug_assert_eq!(
-            row_axes.len() + col_axes.len(),
-            nd,
-            "row+col axis lists must cover every axis exactly once"
-        );
-        // Sanity: every axis appears exactly once.
-        #[cfg(debug_assertions)]
-        {
-            let mut seen = vec![false; nd];
-            for &ax in row_axes.iter().chain(col_axes.iter()) {
-                debug_assert!(ax < nd, "axis {ax} out of range");
-                debug_assert!(!seen[ax], "axis {ax} appears twice in flatten_to_matrix");
-                seen[ax] = true;
-            }
-        }
-
-        let rows: usize = row_axes.iter().map(|&ax| self.shape[ax]).product();
-        let cols: usize = col_axes.iter().map(|&ax| self.shape[ax]).product();
-
-        // Precompute strides in the original layout (row-major).
-        let mut strides = vec![0usize; nd];
-        let mut acc = 1usize;
-        for i in (0..nd).rev() {
-            strides[i] = acc;
-            acc *= self.shape[i];
-        }
-
-        // Dimensions of the new axis ordering (rows first, then cols).
-        let new_order: Vec<usize> = row_axes.iter().chain(col_axes.iter()).copied().collect();
-        let new_dims: Vec<usize> = new_order.iter().map(|&ax| self.shape[ax]).collect();
-
-        let mut out = vec![C::new(0.0, 0.0); rows * cols];
-        // Walk the new-layout multi-index via nested counters.
-        let mut idx = vec![0usize; nd];
-        let total = rows * cols;
-        for flat in 0..total {
-            // Compute the source offset from the new-layout index.
-            let mut src = 0usize;
-            for (i, &ax) in new_order.iter().enumerate() {
-                src += idx[i] * strides[ax];
-            }
-            out[flat] = self.data[src];
-            // Increment idx[nd - 1], carrying into previous axes.
-            for i in (0..nd).rev() {
-                idx[i] += 1;
-                if idx[i] < new_dims[i] {
-                    break;
-                }
-                idx[i] = 0;
-            }
-        }
-        (out, rows, cols)
+        flatten_tensor_raw(&self.data, &self.shape, row_axes, col_axes)
     }
 
     /// Low-level builder. Wraps an already-laid-out flat buffer in a site,
@@ -175,6 +122,67 @@ impl TtnSite {
             edges: new_edges,
         }
     }
+}
+
+/// Flatten a raw row-major tensor `data` of shape `shape` into a matrix by
+/// grouping axes `row_axes` into rows and `col_axes` into columns. Returns
+/// the flat row-major matrix, the number of rows, and the number of columns.
+///
+/// Used both by [`TtnSite::flatten_to_matrix`] and by the two-site
+/// contraction / tree-contraction helpers in [`super::contraction`] when the
+/// accumulator is a bare `(data, shape)` pair without an associated site.
+pub(super) fn flatten_tensor_raw(
+    data: &[C],
+    shape: &[usize],
+    row_axes: &[usize],
+    col_axes: &[usize],
+) -> (Vec<C>, usize, usize) {
+    let nd = shape.len();
+    debug_assert_eq!(
+        row_axes.len() + col_axes.len(),
+        nd,
+        "row+col axis lists must cover every axis exactly once"
+    );
+    #[cfg(debug_assertions)]
+    {
+        let mut seen = vec![false; nd];
+        for &ax in row_axes.iter().chain(col_axes.iter()) {
+            debug_assert!(ax < nd, "axis {ax} out of range");
+            debug_assert!(!seen[ax], "axis {ax} appears twice");
+            seen[ax] = true;
+        }
+    }
+    let rows: usize = row_axes.iter().map(|&ax| shape[ax]).product();
+    let cols: usize = col_axes.iter().map(|&ax| shape[ax]).product();
+
+    let mut strides = vec![0usize; nd];
+    let mut acc = 1usize;
+    for i in (0..nd).rev() {
+        strides[i] = acc;
+        acc *= shape[i];
+    }
+
+    let new_order: Vec<usize> = row_axes.iter().chain(col_axes.iter()).copied().collect();
+    let new_dims: Vec<usize> = new_order.iter().map(|&ax| shape[ax]).collect();
+
+    let mut out = vec![C::new(0.0, 0.0); rows * cols];
+    let mut idx = vec![0usize; nd];
+    let total = rows * cols;
+    for flat in 0..total {
+        let mut src = 0usize;
+        for (i, &ax) in new_order.iter().enumerate() {
+            src += idx[i] * strides[ax];
+        }
+        out[flat] = data[src];
+        for i in (0..nd).rev() {
+            idx[i] += 1;
+            if idx[i] < new_dims[i] {
+                break;
+            }
+            idx[i] = 0;
+        }
+    }
+    (out, rows, cols)
 }
 
 #[cfg(test)]
