@@ -17,15 +17,21 @@
 //! - Hinderink (2026), "Pair-Counting Scaling of the Quantum Chaos Threshold"
 //! - Hinderink (2026), "The Tilde Pattern: Commensurability as Low-Pass Filter"
 
+pub mod allocator;
 pub mod bianchi;
 pub mod channel;
 pub mod error;
-pub mod finite_difference_jacobian;
 pub mod frequency;
 pub mod kicked_ising;
 pub mod mps;
 pub mod partition;
 pub mod reassembly;
+pub mod ttn;
+
+// Production-recommended χ allocators, re-exported at crate root.
+pub use allocator::{
+    chi_allocation_sinc, chi_allocation_sinc_with_radius, chi_allocation_target_budget,
+};
 
 #[cfg(test)]
 mod accuracy;
