@@ -258,7 +258,7 @@ shape, just on a tree.
 
 ### Validation strategy
 
-Three layers, in order:
+Four layers, in order:
 
 1. **1D regression.** A `Ttn` built on `Topology::linear_chain(n)`
    reproduces a known `Mps` test (the `kim_validation` self-dual
@@ -276,15 +276,117 @@ Three layers, in order:
    of the Phase 6 N=12 / N=24 dense-vs-MPS validation that put the
    1D path on a firm footing.
 
-3. **Tindall N=127 benchmark.** Once 1 and 2 are green, run the actual
-   benchmark. Any discrepancy at this stage is structural (truncation
-   regime, swap-network noise floor, allocator behaviour on long
-   edges) rather than a code bug, and is publishable as such.
+3. **Tindall N=127 benchmark vs the published numbers.** Once 1 and 2
+   are green, run the actual benchmark. Depth-5 / 10 / 20 single-qubit
+   ⟨Z⟩ for every qubit, compared to Tindall et al.'s belief-propagation
+   values element-wise.
+
+4. **ITensor TTN cross-reference at N=127.** Independent re-run of the
+   same Tindall circuit with ITensors.jl + ITensorNetworks.jl on the
+   same heavy-hex spanning tree at the same matched edge budget. This
+   is the only independent numerical reference available at N=127 —
+   dense does not reach past N≈28. See the "ITensor cross-reference"
+   section below for the reproducibility pipeline; it is a hard
+   dependency of D.5, not a nice-to-have.
 
 The dense reference for layer 2 already exists in `kicked_ising::reference_kim_run`
 for the 1D case. It needs a heavy-hex variant — one extra function in
 `kicked_ising.rs` that takes a `Topology` and applies the same gates
 in the same order. Cost: ~80 lines.
+
+#### ITensor cross-reference (layer 4)
+
+**Motivation.** Layers 1–3 anchor the correctness story at small and
+medium N, and layer 3 pins Huoma's N=127 result to Tindall's published
+numbers. But Tindall's reference is belief propagation with its own
+approximation budget (loop corrections, message-passing tolerance),
+not an independent TN simulator with a comparable truncation budget.
+A second TTN that counts its truncation error the same way Huoma does
+— and that is implemented in a completely different codebase — is the
+only way to distinguish "Huoma and Tindall disagree by X because
+Huoma's allocator is wrong" from "Huoma and Tindall disagree by X
+because belief propagation and TTN truncation are structurally
+different approximations of the same state." ITensor plays that role.
+
+**What ITensor is used for here (and what it is not).** ITensor is
+our *second opinion* at N=127, not the ground truth. No TTN simulator
+at that size has a dense reference, ours included. The comparison
+asks: given the same heavy-hex spanning tree, the same KIM parameters,
+the same total edge budget, and the same discarded-weight truncation
+mode, do two independent implementations agree on ⟨Z⟩ at depth 5, 10,
+20 to within a few times their individual truncation noise floors?
+If yes, both are trustworthy in that regime. If no, at least one of
+the two has a structural problem worth finding.
+
+**Reproducibility pipeline.** One Julia script lives outside the Rust
+workspace, under `external/itensor_ref/`:
+
+- Pinned versions of Julia + ITensors.jl + ITensorNetworks.jl declared
+  in a `Project.toml` / `Manifest.toml` pair committed to the repo.
+- `kim_heavy_hex.jl` takes the same inputs Huoma's D.5 test takes:
+  `topology.json` (edge list for the 127q spanning tree + the
+  non-tree edges), `params.json` (J·dt, h·dt, depth list), and a
+  `budget.json` (total edge budget, chi_min, chi_max, truncation
+  epsilon).
+- Output: a single `z_expectations.csv` with columns
+  `qubit, depth, z, discarded_weight_total` — the same schema Huoma
+  will emit.
+
+**Hard inputs shared with Huoma.** The same `topology.json` is
+consumed by both sides: `Topology::ibm_eagle_127().to_json()` writes
+it, and the Julia script reads it. This guarantees that "the same
+spanning tree" is not an aspirational statement — it is a literal
+`sha256` match on the file both simulators read.
+
+**Rust-side cross-check.** `tests/ttn_tindall_127.rs` has three
+independent assertions:
+
+1. Huoma vs Tindall's published numbers element-wise.
+2. Huoma vs ITensor CSV element-wise.
+3. ITensor CSV vs Tindall's published numbers element-wise (purely
+   a sanity check on the pipeline — ITensor is expected to agree
+   with itself over time, so this is guarded by a coarser tolerance).
+
+The Huoma-vs-ITensor assertion is the one that carries the weight.
+Tolerances for (2) will be set by the *larger* of each side's reported
+discarded-weight floor plus a small multiplicative margin — not by a
+hard-coded epsilon. Truncation error on both sides is *counted*, so
+the comparison tolerance is a function of the truncation budget both
+simulators were given, not a hand-tuned constant. This keeps the
+check honest across budget sweeps.
+
+**Pre-D.5 work this creates.**
+
+- `Topology::ibm_eagle_127` ships with a `to_json()` method and a
+  golden-file test that hashes the JSON against a committed fixture.
+- `external/itensor_ref/` is bootstrapped alongside D.5 with its
+  Julia manifest + runnable script + README describing the Julia
+  version and how to invoke it offline.
+- CI stays Rust-only for speed; the ITensor run is executed on a
+  developer machine before each D.5 tag and its output committed as
+  a versioned CSV in `external/itensor_ref/data/`. The Rust test
+  reads the committed CSV and does not invoke Julia itself, so the
+  Rust CI does not grow a Julia dependency.
+- If and only if the Huoma-vs-ITensor assertion fails, we regenerate
+  the CSV (not before), to prevent silent drift of the reference.
+
+**Scope discipline.** ITensor is used *only* for (a) the D.5 Tindall
+cross-reference described above, and (b) the Track B follow-up item
+in the next sub-section. It is not used for D.1/D.2/D.3 validation,
+not used for the chi allocator ports, and not used as a development
+aid (we don't tune Huoma against ITensor output — that would defeat
+the point of an independent reference). The dense statevector path
+remains the sole reference for everything below N=16.
+
+**Track B follow-up — 1D MPS cross-check.** Independent of Track D,
+a one-shot comparison of Huoma's 1D MPS vs ITensor MPS on a fixed KIM
+benchmark is worth adding as a Track B item (not a blocker). Our 1D
+path is already validated against the dense reference at 2.6e-15 at
+N=12 and 7.4e-16 at N=24, so ITensor there is a second opinion on a
+path we already trust to floating point precision — low urgency, but
+nice to have in the ROADMAP section listing production-hardening
+items. A short follow-up issue `track-b: itensor-mps-crosscheck-1d`
+is enough to pin the intent.
 
 ---
 
@@ -335,12 +437,24 @@ trusts. Everything that follows builds on a green test here.
 - Tests mirroring `allocator.rs`'s 11 corner-case suite, on linear
   trees (regression) and on a small Y-junction (sanity).
 
-#### D.5 — Tindall N=127 benchmark
+#### D.5 — Tindall N=127 benchmark (incl. ITensor cross-reference)
 
 - `tests/ttn_tindall_127.rs` runs the full benchmark with both
-  `chi_allocation_sinc_tree` and uniform-χ at matched edge budget,
-  records depth-5/10/20 ⟨Z⟩ for all 127 qubits, and asserts
-  element-wise agreement with hard-coded Tindall numbers within 1 %.
+  `chi_allocation_sinc_tree` and uniform-χ at matched edge budget and
+  records depth-5/10/20 ⟨Z⟩ for all 127 qubits.
+- Three independent assertions (see "ITensor cross-reference"):
+  1. Huoma vs Tindall's published numbers element-wise.
+  2. Huoma vs committed ITensor CSV element-wise, tolerance derived
+     from the larger discarded-weight floor of the two runs.
+  3. Pipeline sanity check: ITensor CSV vs Tindall numbers element-
+     wise at a looser tolerance.
+- `Topology::ibm_eagle_127().to_json()` + golden-file test hashing
+  the JSON against a committed fixture, so the ITensor script reads
+  the *same* topology bytes Huoma executes on.
+- `external/itensor_ref/` bootstrap: pinned Julia `Project.toml` /
+  `Manifest.toml`, `kim_heavy_hex.jl` runner, committed
+  `data/z_expectations.csv` reference, README describing the offline
+  regeneration workflow. CI remains Rust-only.
 - `examples/tindall_eagle.rs` — a runnable demo, the public face of
   the milestone.
 - `PHASE8_REPORT.md` — the historical record. ROADMAP and BIANCHI
@@ -391,3 +505,14 @@ ships:
    tree distance metric is well-defined, so the same cap applies, but
    for N=127 even the uncapped O(N²) variant is fast enough that the
    choice is mostly a matter of taste / consistency with the 1D path.
+5. ITensor cross-reference pinning: which specific version of Julia,
+   ITensors.jl, and ITensorNetworks.jl do we commit to? The
+   comparison is only meaningful if both sides are reproducible; a
+   `Manifest.toml` with an exact pin is the mechanism, but we still
+   need to pick the pin. Default: latest stable at the time D.5 opens,
+   bumped deliberately in follow-up PRs rather than floating.
+6. ITensor regeneration policy: committed CSV is the norm, but if
+   Tindall ship an updated benchmark or ITensorNetworks changes its
+   default gauge / truncation, do we regenerate silently or require a
+   PR with a matching PHASE8_REPORT update? Default: the latter. The
+   reference CSV lives under version control for exactly this reason.
