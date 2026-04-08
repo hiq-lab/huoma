@@ -1,22 +1,32 @@
-//! Tree Tensor Network (TTN) simulator — Track D scaffolding.
+//! Tree Tensor Network (TTN) simulator.
 //!
-//! This module is the new entry point for non-1D Huoma. The public types
-//! ([`Topology`], [`EdgeId`], [`Ttn`]) define the surface that the eventual
-//! heavy-hex implementation has to fill, and the linear-chain special case
-//! is wired up today by delegating to the validated [`crate::mps::Mps`]
-//! backend. That gives the D.1 milestone — a `Ttn` that can represent a 1D
-//! chain and reproduce `Mps` semantics bit-for-bit — without duplicating any
-//! of the SVD / contraction code in `mps.rs`.
+//! This is the entry point for non-1D Huoma. Public types ([`Topology`],
+//! [`EdgeId`], [`Edge`], [`Ttn`]) live here; the implementation is split into
+//! submodules:
 //!
-//! General trees (heavy-hex Eagle 127q in particular) are *not* implemented
-//! in this scaffolding. Constructors that would need them ([`Topology::from_edges`]
-//! beyond a linear chain, [`Ttn::apply_two_qubit_via_path`], …) panic with a
-//! clear "unimplemented" message so that the surface compiles, the 1D
-//! regression has a real assertion to anchor on, and the Track D milestones
-//! D.2–D.5 in `TRACK_D_DESIGN.md` can fill in the body without renaming
-//! anything.
+//! - [`topology`] — graph layer (validation, neighbours, cut partitions, paths)
+//! - [`site`] — native flat-storage `TtnSite` + tensor reshape helpers
+//! - [`gauge`] — orthogonality-center tracking + QR sweeps
+//! - [`contraction`] — two-site merge + bipartition SVD (D.2 in progress)
+//! - [`dense`] — test-only topology-agnostic statevector reference
 //!
-//! See `TRACK_D_DESIGN.md` for the milestones and the design rationale.
+//! The linear-chain special case continues to delegate to the validated
+//! [`crate::mps::Mps`] backend through D.2 (see `TRACK_D_DESIGN.md`); the
+//! native tree path is engaged for non-linear topologies via a `Backend`
+//! enum dispatched in this module. The facade retires in D.3 when the
+//! swap-network code lands.
+//!
+//! See `TRACK_D_DESIGN.md` for the full milestone roadmap.
+
+pub mod contraction;
+pub mod gauge;
+pub mod site;
+pub mod topology;
+
+#[cfg(test)]
+pub(crate) mod dense;
+
+pub use topology::{Edge, EdgeId, Topology};
 
 use num_complex::Complex64;
 
@@ -24,103 +34,6 @@ use crate::error::Result;
 use crate::mps::{Mps, TruncationMode};
 
 type C = Complex64;
-
-/// Stable handle to an edge in a [`Topology`]. The integer is an index into
-/// `Topology::edges` and is preserved for the lifetime of the topology, the
-/// same way bond indices are preserved across the lifetime of an `Mps`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EdgeId(pub usize);
-
-/// Undirected edge between two qubits in a [`Topology`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Edge {
-    pub a: usize,
-    pub b: usize,
-}
-
-/// Tree topology over `n_qubits` qubits.
-///
-/// Invariants enforced at construction (currently only for the linear-chain
-/// constructor — general-tree validation lands with milestone D.2):
-/// - `edges.len() == n_qubits - 1`
-/// - The edge set forms a tree (connected, acyclic).
-/// - `EdgeId(k)` indexes `edges[k]` and is stable.
-#[derive(Debug, Clone)]
-pub struct Topology {
-    n_qubits: usize,
-    edges: Vec<Edge>,
-}
-
-impl Topology {
-    /// Linear-chain topology with edges `(0,1), (1,2), …, (n-2, n-1)`.
-    /// This is the degenerate-tree case used by the D.1 1D regression and is
-    /// the only general-purpose constructor implemented in the scaffolding.
-    #[must_use]
-    pub fn linear_chain(n_qubits: usize) -> Self {
-        assert!(n_qubits >= 1, "Topology::linear_chain requires n_qubits ≥ 1");
-        let edges = (0..n_qubits.saturating_sub(1))
-            .map(|i| Edge { a: i, b: i + 1 })
-            .collect();
-        Self { n_qubits, edges }
-    }
-
-    /// General-tree constructor — milestone D.2.
-    ///
-    /// The signature is fixed; the body lands with D.2 alongside the
-    /// connectivity / cycle / leaf-count validation listed in
-    /// `TRACK_D_DESIGN.md` § Architecture.
-    #[must_use]
-    pub fn from_edges(n_qubits: usize, edges: Vec<Edge>) -> Self {
-        // For the linear-chain happy path the user could legitimately call
-        // `from_edges` with `[(0,1), (1,2), …]` — accept that without
-        // requiring D.2 to ship, so the API contract is honest from day one.
-        let is_linear_chain = edges.len() + 1 == n_qubits
-            && edges
-                .iter()
-                .enumerate()
-                .all(|(i, e)| (e.a == i && e.b == i + 1) || (e.a == i + 1 && e.b == i));
-        if is_linear_chain {
-            return Self { n_qubits, edges };
-        }
-        unimplemented!(
-            "Topology::from_edges for non-linear trees lands with Track D milestone D.2"
-        );
-    }
-
-    #[must_use]
-    pub fn n_qubits(&self) -> usize {
-        self.n_qubits
-    }
-
-    #[must_use]
-    pub fn n_edges(&self) -> usize {
-        self.edges.len()
-    }
-
-    #[must_use]
-    pub fn edges(&self) -> &[Edge] {
-        &self.edges
-    }
-
-    #[must_use]
-    pub fn edge(&self, id: EdgeId) -> Edge {
-        self.edges[id.0]
-    }
-
-    /// True if the topology is a linear chain `0—1—2—…—(n-1)`. Used by the
-    /// scaffolding to dispatch to the [`Mps`] backend; replaced by a richer
-    /// dispatch (degree-aware) when D.2 lands.
-    #[must_use]
-    pub fn is_linear_chain(&self) -> bool {
-        if self.edges.len() + 1 != self.n_qubits {
-            return false;
-        }
-        self.edges
-            .iter()
-            .enumerate()
-            .all(|(i, e)| (e.a == i && e.b == i + 1) || (e.a == i + 1 && e.b == i))
-    }
-}
 
 /// Tree Tensor Network state vector.
 ///
