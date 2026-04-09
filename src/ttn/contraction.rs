@@ -21,7 +21,9 @@ use num_complex::Complex64;
 use crate::error::Result;
 use crate::mps::TruncationMode;
 
-use super::site::{flatten_tensor_raw, TtnSite};
+use super::site::TtnSite;
+#[cfg(test)]
+use super::site::flatten_tensor_raw;
 use super::topology::{EdgeId, Topology};
 
 type C = Complex64;
@@ -318,6 +320,7 @@ pub(super) fn apply_two_qubit_on_edge_native(
 }
 
 /// Axis label for the `tree_to_statevector` accumulator.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AxLabel {
     /// Virtual edge that hasn't been contracted yet.
@@ -331,7 +334,11 @@ enum AxLabel {
 /// The output is ordered with qubit 0 as the most significant bit, matching
 /// the convention in [`super::dense::DenseState`] and in `Mps::to_statevector`.
 /// Intended for small `n` (≤ ~16); used by the D.2 Y-junction / star tests
-/// and by `Ttn::expectation_z` in the native tree path.
+/// and by the test-only `Ttn::to_statevector` method. Since the Tindall
+/// N = 127 benchmark in D.5 cannot materialise a `2^127` statevector, this
+/// helper is gated behind `#[cfg(test)]` — the production observable path
+/// is the gauge-aware environment sweep in `Ttn::expectation_z` (D.5.0).
+#[cfg(test)]
 pub(super) fn tree_to_statevector(sites: &[TtnSite], topology: &Topology) -> Vec<C> {
     let n = topology.n_qubits();
     assert!(n >= 1);
