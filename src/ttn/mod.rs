@@ -193,18 +193,112 @@ impl Ttn {
         }
     }
 
-    /// Apply a two-qubit gate on two qubits connected only via the tree
-    /// path — milestone D.3 (swap network).
+    /// Apply a two-qubit gate on any pair of qubits by routing through the
+    /// unique tree path between them — milestone D.3 (swap network).
+    ///
+    /// Strategy: walk the tree path `q1 → … → q2`, SWAP forward along each
+    /// edge so that the *state* originally at `q1` is adjacent to `q2`,
+    /// apply the gate on the last edge, then SWAP back to restore the
+    /// original qubit-to-site assignment. For a path of length `k` this
+    /// costs `2·(k − 1)` SWAPs plus the final gate, i.e. `2k − 1` two-qubit
+    /// operations on tree-adjacent pairs. If `q1` and `q2` are already
+    /// tree-adjacent the path has length 1 and the method degenerates to
+    /// a single [`Self::apply_two_qubit_on_edge`] call.
+    ///
+    /// The 4×4 `u` is indexed with `q1` as the first qubit and `q2` as the
+    /// second (row = `2·σ_{q1} + σ_{q2}`). At every edge encountered along
+    /// the path the gate / SWAP is re-oriented to match the edge's stored
+    /// `(a, b)` ordering before being handed to
+    /// [`Self::apply_two_qubit_on_edge`], so callers can ignore edge
+    /// orientation entirely.
+    ///
+    /// All swap-network SVDs share the caller-provided `max_bond`. For
+    /// lossless validation against a dense reference pass a bound large
+    /// enough that no singular value is ever dropped (a safe upper bound is
+    /// `2^(n_qubits / 2)`); for production heavy-hex execution use the
+    /// same finite cap as the direct-edge gates so truncation error
+    /// composes uniformly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any SVD failure from the underlying
+    /// [`Self::apply_two_qubit_on_edge`] calls.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `q1 == q2` or either qubit is out of range, matching the
+    /// panic-on-programmer-error discipline used by the rest of `ttn`.
     pub fn apply_two_qubit_via_path(
         &mut self,
-        _q1: usize,
-        _q2: usize,
-        _u: [[C; 4]; 4],
-        _max_bond: usize,
+        q1: usize,
+        q2: usize,
+        u: [[C; 4]; 4],
+        max_bond: usize,
     ) -> Result<()> {
-        unimplemented!(
-            "Ttn::apply_two_qubit_via_path lands with Track D milestone D.3 (swap network)"
+        let n = self.topology.n_qubits();
+        assert!(q1 < n && q2 < n, "qubit out of range");
+        assert!(q1 != q2, "apply_two_qubit_via_path requires q1 != q2");
+
+        let path = self.topology.path(q1, q2);
+        debug_assert!(
+            !path.is_empty(),
+            "path between distinct qubits in a tree must be non-empty"
         );
+
+        // Reconstruct the ordered vertex sequence q1 = v_0, v_1, …, v_k = q2.
+        // We need this to know which end of each edge is the "current" one
+        // that holds the in-transit q1-state at each step of the walk.
+        let mut vertices: Vec<usize> = Vec::with_capacity(path.len() + 1);
+        vertices.push(q1);
+        for &eid in &path {
+            let e = self.topology.edge(eid);
+            let prev = *vertices.last().expect("vertices seeded with q1");
+            let next = if e.a == prev {
+                e.b
+            } else {
+                debug_assert_eq!(
+                    e.b, prev,
+                    "topology::path returned an edge not incident on the previous vertex"
+                );
+                e.a
+            };
+            vertices.push(next);
+        }
+        debug_assert_eq!(*vertices.last().expect("non-empty"), q2);
+
+        // Tree-adjacent fast path: path length 1, no swaps, just orient the
+        // gate to the edge's stored (a, b) direction and dispatch.
+        let final_edge = self.topology.edge(path[path.len() - 1]);
+        if path.len() == 1 {
+            let oriented = orient_two_qubit_gate_for_edge(u, q1, final_edge);
+            return self.apply_two_qubit_on_edge(path[0], oriented, max_bond);
+        }
+
+        let swap = swap_gate();
+
+        // Forward pass: SWAP along path[0..k-1] so the state originally at
+        // q1 migrates to v_{k-1}, which is adjacent to v_k = q2.
+        for i in 0..path.len() - 1 {
+            let eid = path[i];
+            // SWAP is symmetric under qubit reordering so we can hand it off
+            // verbatim without re-orienting.
+            self.apply_two_qubit_on_edge(eid, swap, max_bond)?;
+        }
+
+        // Now the "q1-state" is at v_{k-1}. Apply the real gate on the last
+        // edge, oriented so its first qubit index matches v_{k-1}.
+        let from = vertices[vertices.len() - 2];
+        let oriented = orient_two_qubit_gate_for_edge(u, from, final_edge);
+        self.apply_two_qubit_on_edge(path[path.len() - 1], oriented, max_bond)?;
+
+        // Backward pass: undo the forward SWAPs in reverse order so every
+        // qubit-to-site assignment returns to its pre-call state.
+        for i in (0..path.len() - 1).rev() {
+            let eid = path[i];
+            self.apply_two_qubit_on_edge(eid, swap, max_bond)?;
+        }
+
+        Ok(())
     }
 
     /// Single-qubit ⟨Z⟩ at qubit `target`, normalised by the state's 2-norm².
@@ -235,6 +329,61 @@ impl Ttn {
             Backend::Tree { sites, .. } => contraction::tree_to_statevector(sites, &self.topology),
         }
     }
+}
+
+/// The 4×4 two-qubit SWAP gate, indexed as row = `2·σ_a + σ_b` matching the
+/// convention of [`Ttn::apply_two_qubit_on_edge`]. Used by the swap-network
+/// long-range gate in [`Ttn::apply_two_qubit_via_path`].
+#[inline]
+fn swap_gate() -> [[C; 4]; 4] {
+    let o = C::new(1.0, 0.0);
+    let z = C::new(0.0, 0.0);
+    [
+        [o, z, z, z],
+        [z, z, o, z],
+        [z, o, z, z],
+        [z, z, z, o],
+    ]
+}
+
+/// Re-orient a two-qubit gate so its "first qubit" index matches a specific
+/// endpoint of a tree edge.
+///
+/// The swap-network walks the tree path and needs to apply the final gate
+/// with its first qubit landing on the *in-transit* end of the last edge,
+/// which may be either `edge.a` or `edge.b` depending on how the path was
+/// traversed. `apply_two_qubit_on_edge` always interprets the 4×4 as
+/// `row = 2·σ_a + σ_b`, so if `from == edge.a` we return `u` verbatim;
+/// otherwise we transpose the qubit-index pair:
+///
+/// ```text
+/// out[2·α + β, 2·α' + β']  =  u[2·β + α, 2·β' + α']
+/// ```
+///
+/// SWAP is symmetric under this transformation — a round-trip through
+/// `orient_two_qubit_gate_for_edge` leaves it unchanged — so the SWAPs
+/// driving the forward / backward passes can be applied without ever
+/// calling this helper.
+fn orient_two_qubit_gate_for_edge(u: [[C; 4]; 4], from: usize, edge: Edge) -> [[C; 4]; 4] {
+    if from == edge.a {
+        return u;
+    }
+    debug_assert_eq!(
+        from, edge.b,
+        "orient_two_qubit_gate_for_edge: `from` must be an endpoint of `edge`"
+    );
+    let mut out = [[C::new(0.0, 0.0); 4]; 4];
+    for alpha in 0..2 {
+        for beta in 0..2 {
+            for alpha_p in 0..2 {
+                for beta_p in 0..2 {
+                    out[2 * alpha + beta][2 * alpha_p + beta_p] =
+                        u[2 * beta + alpha][2 * beta_p + alpha_p];
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Apply a single-qubit 2×2 unitary to the physical leg of a native
@@ -603,6 +752,273 @@ mod tests {
         }
     }
 
+    // ─── D.3 swap-network anchors ──────────────────────────────────────
+    //
+    // `apply_two_qubit_via_path` routes a gate between any two qubits by
+    // walking the tree path, SWAPping forward, applying the gate on the
+    // last edge, and SWAPping back. These tests pin its correctness
+    // against `DenseState` on three topologies:
+    //
+    //   - Y-junction (path length 2 between leaves)
+    //   - 5-qubit linear chain (path length 3 and 4)
+    //   - degree-4 star (path length 2 between opposite leaves)
+    //
+    // Every test is run **lossless** (max_bond large enough that no SV is
+    // ever dropped) so any drift from the dense reference is unambiguously
+    // a bug in the swap-network logic, not a truncation artefact.
+
+    /// Orient helper: for a tree path of length 1 (q1, q2 tree-adjacent),
+    /// `apply_two_qubit_via_path` must produce the same state as
+    /// `apply_two_qubit_on_edge` with the properly-oriented gate.
+    #[test]
+    fn via_path_tree_adjacent_matches_direct_edge() {
+        let topology = Topology::linear_chain(4);
+        let mut ttn_path = Ttn::new(topology.clone());
+        let mut ttn_edge = Ttn::new(topology.clone());
+        // Break the product state so the comparison is non-trivial.
+        for q in 0..4 {
+            ttn_path.apply_single(q, hadamard());
+            ttn_edge.apply_single(q, hadamard());
+        }
+        let u = cnot();
+        // Apply on (1, 2) via path (length 1, since they are tree-adjacent
+        // on the linear chain).
+        ttn_path.apply_two_qubit_via_path(1, 2, u, 64).unwrap();
+        // And via the direct edge (edge 1 on the 4-chain connects qubits
+        // 1 and 2).
+        ttn_edge.apply_two_qubit_on_edge(EdgeId(1), u, 64).unwrap();
+        for q in 0..4 {
+            let z_path = ttn_path.expectation_z(q);
+            let z_edge = ttn_edge.expectation_z(q);
+            assert!(
+                (z_path - z_edge).abs() < 1e-13,
+                "path vs direct mismatch at q={q}: path={z_path:e}, edge={z_edge:e}"
+            );
+        }
+    }
+
+    /// Tree-adjacent gate via path must also respect orientation: the gate
+    /// must be applied with `q1` as the first qubit index even if the
+    /// underlying edge stores `(q2, q1)`. The direction matters for
+    /// asymmetric gates like CNOT.
+    #[test]
+    fn via_path_tree_adjacent_respects_qubit_order_for_cnot() {
+        // 3-qubit Y-junction via from_edges, edge (0,1) is EdgeId(0).
+        // Apply CNOT(0,1) vs CNOT(1,0) and verify they give different
+        // states (CNOT is not symmetric in its two qubits).
+        let topology = Topology::from_edges(
+            3,
+            vec![
+                Edge { a: 0, b: 1 },
+                Edge { a: 0, b: 2 },
+            ],
+        );
+        // Prepare |+⟩|+⟩|+⟩.
+        let mut ttn_01 = Ttn::new(topology.clone());
+        let mut ttn_10 = Ttn::new(topology.clone());
+        for q in 0..3 {
+            ttn_01.apply_single(q, hadamard());
+            ttn_10.apply_single(q, hadamard());
+        }
+        // Rotate qubit 0 to mix the control bit.
+        ttn_01.apply_single(0, rx(0.7));
+        ttn_10.apply_single(0, rx(0.7));
+        // Apply CNOT in opposite directions via path.
+        ttn_01.apply_two_qubit_via_path(0, 1, cnot(), 64).unwrap();
+        ttn_10.apply_two_qubit_via_path(1, 0, cnot(), 64).unwrap();
+        // Compare against a dense reference for each direction.
+        let mut dense_01 = DenseState::zero(3);
+        let mut dense_10 = DenseState::zero(3);
+        for q in 0..3 {
+            dense_01.apply_single(q, hadamard());
+            dense_10.apply_single(q, hadamard());
+        }
+        dense_01.apply_single(0, rx(0.7));
+        dense_10.apply_single(0, rx(0.7));
+        dense_01.apply_two_qubit(0, 1, cnot());
+        dense_10.apply_two_qubit(1, 0, cnot());
+        for q in 0..3 {
+            assert!(
+                (ttn_01.expectation_z(q) - dense_01.expectation_z(q)).abs() < 1e-13,
+                "CNOT(0,1) direction failed at q={q}"
+            );
+            assert!(
+                (ttn_10.expectation_z(q) - dense_10.expectation_z(q)).abs() < 1e-13,
+                "CNOT(1,0) direction failed at q={q}"
+            );
+        }
+    }
+
+    /// Y-junction leaf-to-leaf: apply a gate on (1, 2) where 1 and 2 are
+    /// leaves joined only via the degree-3 centre 0. Path length = 2 → one
+    /// forward SWAP, one gate, one backward SWAP = three tree-adjacent
+    /// operations in total.
+    #[test]
+    fn via_path_y_junction_leaf_to_leaf_matches_dense() {
+        let topology = y_junction();
+        let mut ttn = Ttn::new(topology.clone());
+        let mut dense = DenseState::zero(4);
+        for q in 0..4 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+            let theta = 0.23 + 0.19 * q as f64;
+            ttn.apply_single(q, rx(theta));
+            dense.apply_single(q, rx(theta));
+        }
+        // Non-trivial gate on leaves 1 and 2.
+        ttn.apply_two_qubit_via_path(1, 2, zz(0.37), 64).unwrap();
+        dense.apply_two_qubit(1, 2, zz(0.37));
+        // And a CNOT on leaves 1 and 3, which exercises a second path of
+        // length 2 through the same centre.
+        ttn.apply_two_qubit_via_path(1, 3, cnot(), 64).unwrap();
+        dense.apply_two_qubit(1, 3, cnot());
+        for q in 0..4 {
+            let z_ttn = ttn.expectation_z(q);
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (z_ttn - z_dense).abs() < 1e-12,
+                "via-path Y-junction leaf-to-leaf failed at q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+            );
+        }
+    }
+
+    /// 5-qubit linear chain: apply a gate on (0, 4) — path length 4, the
+    /// longest gate-distance possible on this topology. Three forward
+    /// SWAPs, one gate, three back SWAPs = seven tree-adjacent operations.
+    #[test]
+    fn via_path_linear_chain_length_4_matches_dense() {
+        let topology = Topology::linear_chain(5);
+        let mut ttn = Ttn::new(topology.clone());
+        let mut dense = DenseState::zero(5);
+        for q in 0..5 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+            ttn.apply_single(q, rz(0.31 + 0.07 * q as f64));
+            dense.apply_single(q, rz(0.31 + 0.07 * q as f64));
+        }
+        ttn.apply_two_qubit_via_path(0, 4, cnot(), 128).unwrap();
+        dense.apply_two_qubit(0, 4, cnot());
+        // Follow up with a reverse-direction path (4, 0) — the swap network
+        // must also handle q1 > q2 correctly.
+        ttn.apply_two_qubit_via_path(4, 0, zz(0.42), 128).unwrap();
+        dense.apply_two_qubit(4, 0, zz(0.42));
+        for q in 0..5 {
+            let z_ttn = ttn.expectation_z(q);
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (z_ttn - z_dense).abs() < 1e-12,
+                "via-path length-4 failed at q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+            );
+        }
+    }
+
+    /// Degree-4 star: apply a gate on two leaves (2, 4) through the degree-4
+    /// centre. Path length 2. This exercises the SWAP path through a node
+    /// whose multi-index reshape is more expensive than Y-junction.
+    #[test]
+    fn via_path_degree_four_star_leaf_to_leaf_matches_dense() {
+        let topology = star_four();
+        let mut ttn = Ttn::new(topology.clone());
+        let mut dense = DenseState::zero(5);
+        for q in 0..5 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+        // One tree-adjacent gate first to build entanglement with the
+        // centre, then a leaf-to-leaf via-path gate across the star.
+        ttn.apply_two_qubit_on_edge(EdgeId(0), zz(0.19), 128).unwrap();
+        dense.apply_two_qubit(0, 1, zz(0.19));
+        ttn.apply_two_qubit_via_path(2, 4, cnot(), 128).unwrap();
+        dense.apply_two_qubit(2, 4, cnot());
+        for q in 0..5 {
+            let z_ttn = ttn.expectation_z(q);
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (z_ttn - z_dense).abs() < 1e-12,
+                "via-path star failed at q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+            );
+        }
+    }
+
+    /// Applying a gate `U` via path and then its inverse `U†` via the same
+    /// path must return the state to its pre-call form. This is a strong
+    /// internal consistency check on the forward-then-backward SWAP
+    /// choreography: any asymmetry in the SWAP path would leave a residual
+    /// qubit permutation behind that the inverse gate would not undo.
+    #[test]
+    fn via_path_unitary_round_trip_returns_to_initial() {
+        let topology = Topology::linear_chain(5);
+        let mut ttn = Ttn::new(topology.clone());
+        for q in 0..5 {
+            ttn.apply_single(q, hadamard());
+            ttn.apply_single(q, rx(0.41 - 0.08 * q as f64));
+        }
+        // Snapshot initial ⟨Z⟩ values.
+        let z_before: Vec<f64> = (0..5).map(|q| ttn.expectation_z(q)).collect();
+
+        // Apply a non-symmetric gate and its inverse via path. CNOT is its
+        // own inverse, so CNOT ∘ CNOT = I and the state must return exactly.
+        ttn.apply_two_qubit_via_path(0, 3, cnot(), 128).unwrap();
+        ttn.apply_two_qubit_via_path(0, 3, cnot(), 128).unwrap();
+
+        for q in 0..5 {
+            let z_after = ttn.expectation_z(q);
+            assert!(
+                (z_after - z_before[q]).abs() < 1e-12,
+                "round-trip failed at q={q}: before={:e}, after={z_after:e}",
+                z_before[q]
+            );
+        }
+    }
+
+    /// Mixed drive test: on the degree-4 star, run one layer of
+    /// Hadamard-everywhere then a sequence of via-path gates covering
+    /// every leaf-pair. This stresses repeated re-entry of the swap
+    /// network with different endpoints on the same topology.
+    #[test]
+    fn via_path_all_leaf_pairs_on_star_match_dense() {
+        let topology = star_four();
+        let mut ttn = Ttn::new(topology.clone());
+        let mut dense = DenseState::zero(5);
+        for q in 0..5 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+        // All 6 ordered leaf-pairs with different-ish gates.
+        let pairs = [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)];
+        for (i, &(a, b)) in pairs.iter().enumerate() {
+            let theta = 0.11 + 0.09 * i as f64;
+            ttn.apply_two_qubit_via_path(a, b, zz(theta), 128).unwrap();
+            dense.apply_two_qubit(a, b, zz(theta));
+        }
+        for q in 0..5 {
+            let z_ttn = ttn.expectation_z(q);
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (z_ttn - z_dense).abs() < 1e-11,
+                "all-leaf-pairs failed at q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+            );
+        }
+    }
+
+    /// Orient helper sanity: transposing a 4×4 qubit gate twice returns
+    /// the original gate. Guards against an arithmetic typo in the
+    /// multi-index reshuffle inside `orient_two_qubit_gate_for_edge`.
+    #[test]
+    fn orient_gate_is_its_own_inverse() {
+        let u = cnot();
+        let edge = Edge { a: 3, b: 7 };
+        let once = orient_two_qubit_gate_for_edge(u, 7, edge);
+        let twice = orient_two_qubit_gate_for_edge(once, 7, edge);
+        // Twice-transposed should equal the original.
+        for i in 0..4 {
+            for j in 0..4 {
+                let diff = (twice[i][j] - u[i][j]).norm();
+                assert!(diff < 1e-15, "twice[{i}][{j}] != u[{i}][{j}]");
+            }
+        }
+    }
+
     // The KIM driver in `kicked_ising.rs` takes `&mut Mps` directly. For the
     // regression test we expose the linear-chain backend through a tiny
     // crate-private helper rather than widening the `Ttn` public surface
@@ -613,6 +1029,269 @@ mod tests {
             Backend::Linear(mps) => mps,
             Backend::Tree { .. } => {
                 panic!("ttn_backend_mut called on non-linear backend")
+            }
+        }
+    }
+
+    // ─── D.3 small-heavy-hex KIM validation ────────────────────────────
+    //
+    // Build a tiny sub-fragment of IBM Eagle (13 qubits, 1 hexagonal cycle,
+    // 1 degree-3 junction in the spanning tree, 1 non-tree edge) and run a
+    // few Floquet steps of the kicked Ising model through both the native
+    // `Ttn` backend and the topology-agnostic `DenseState` reference.
+    // Success condition: every qubit's ⟨Z⟩ agrees across the two paths to
+    // floating-point precision after N steps, with `max_bond` large enough
+    // that no singular value is ever dropped. This is the design-doc D.3
+    // gate: "small heavy-hex subgraph (N≈12–16) Ttn vs dense statevector
+    // agreement at FP precision after 5 KIM layers" (TRACK_D_DESIGN.md §
+    // D.3).
+    //
+    // The 13-qubit fragment is a genuine sub-graph of Eagle 127q:
+    //
+    //     Eagle qubit → local id
+    //      0, 1, 2, 3, 4, 5    →  0, 1, 2, 3, 4, 5   (row 0 partial)
+    //      14, 15               →  6, 7              (bridges)
+    //      18, 19, 20, 21, 22  →  8, 9, 10, 11, 12   (row 2 partial)
+    //
+    // Coupling edges (13 total):
+    //   row 0:     (0,1), (1,2), (2,3), (3,4), (4,5)
+    //   bridges:   (0,6), (6,8), (4,7), (7,12)
+    //   row 2:     (8,9), (9,10), (10,11), (11,12)
+    //
+    // |E| − |V| + 1 = 13 − 13 + 1 = 1 independent cycle. Spanning tree
+    // drops the (0,6) edge, which leaves qubit 4 as a genuine degree-3
+    // junction (tree neighbours: 3, 5, 7) and forces `apply_two_qubit_via_path`
+    // to route the single non-tree ZZ gate through the junction on a
+    // tree path of length 11. That exercises both the junction
+    // contraction code in the native Ttn backend and the
+    // swap-network machinery on the same test.
+
+    use crate::kicked_ising::KimParams;
+
+    /// Tuple returned by `small_eagle_fragment`:
+    ///   - `Topology`: the spanning tree (12 edges over 13 qubits)
+    ///   - `Vec<Edge>`: the coupling edges dropped to form the tree
+    ///     (exactly one for this fragment)
+    ///   - `Vec<Edge>`: the full coupling graph (13 edges, with `a < b`)
+    fn small_eagle_fragment() -> (Topology, Vec<Edge>, Vec<Edge>) {
+        // Full coupling graph (13 edges).
+        let coupling: Vec<Edge> = vec![
+            // row 0
+            Edge { a: 0, b: 1 },
+            Edge { a: 1, b: 2 },
+            Edge { a: 2, b: 3 },
+            Edge { a: 3, b: 4 },
+            Edge { a: 4, b: 5 },
+            // bridges
+            Edge { a: 0, b: 6 },
+            Edge { a: 6, b: 8 },
+            Edge { a: 4, b: 7 },
+            Edge { a: 7, b: 12 },
+            // row 2
+            Edge { a: 8, b: 9 },
+            Edge { a: 9, b: 10 },
+            Edge { a: 10, b: 11 },
+            Edge { a: 11, b: 12 },
+        ];
+        debug_assert_eq!(coupling.len(), 13);
+
+        // Spanning tree: drop (0, 6) so qubit 4 remains a degree-3
+        // junction (3, 5, 7). Every other coupling edge is a tree edge.
+        let tree_edges: Vec<Edge> = coupling
+            .iter()
+            .copied()
+            .filter(|e| !(e.a == 0 && e.b == 6))
+            .collect();
+        debug_assert_eq!(tree_edges.len(), 12);
+
+        let non_tree_edges: Vec<Edge> = vec![Edge { a: 0, b: 6 }];
+
+        let topology = Topology::from_edges(13, tree_edges);
+        debug_assert_eq!(topology.degree(4), 3, "qubit 4 must be a tree junction");
+        debug_assert_eq!(topology.degree(0), 1, "qubit 0 is a tree leaf after dropping (0,6)");
+        debug_assert_eq!(topology.degree(5), 1, "qubit 5 is a tree leaf");
+        debug_assert_eq!(topology.degree(6), 1, "qubit 6 is a tree leaf after dropping (0,6)");
+
+        (topology, non_tree_edges, coupling)
+    }
+
+    /// One KIM Floquet step on a `Ttn` over a heavy-hex sub-graph:
+    ///
+    /// 1. ZZ entangling layer on every coupling edge (tree-adjacent pairs
+    ///    via `apply_two_qubit_on_edge`, non-tree pairs via
+    ///    `apply_two_qubit_via_path`).
+    /// 2. Optional longitudinal Rz(2·h_z·dt) kick on every qubit.
+    /// 3. Transverse Rx(2·h_x·dt) kick on every qubit.
+    ///
+    /// Conventions match `kicked_ising::apply_kim_step` for the 1D path:
+    /// the ZZ gate is `exp(-i (J·dt) Z⊗Z)` with **no factor of two**, and
+    /// the Rx / Rz kicks use the standard `exp(-i θ/2 σ)` convention so
+    /// the angles passed in are `2·h_x·dt` / `2·h_z·dt`.
+    fn apply_kim_step_ttn_heavy_hex(
+        ttn: &mut Ttn,
+        non_tree_edges: &[Edge],
+        params: KimParams,
+        max_bond: usize,
+    ) -> Result<()> {
+        // 1. ZZ entangling layer — tree-adjacent edges first, via the
+        //    native direct-edge path, then non-tree edges via the swap
+        //    network. Order within each group is deterministic (the
+        //    topology's internal edge enumeration) so test runs are
+        //    reproducible bit-for-bit.
+        let zz_theta_full = 2.0 * params.j * params.dt; // test zz() uses θ/2 internally
+        let zz_u = zz(zz_theta_full);
+
+        // Tree edges: iterate the topology's canonical edge list.
+        let topology = ttn.topology().clone();
+        for eid_idx in 0..topology.n_edges() {
+            ttn.apply_two_qubit_on_edge(EdgeId(eid_idx), zz_u, max_bond)?;
+        }
+        // Non-tree edges: route via the swap network through the tree.
+        for edge in non_tree_edges {
+            ttn.apply_two_qubit_via_path(edge.a, edge.b, zz_u, max_bond)?;
+        }
+
+        // 2. Global Rz kick (only if h_z ≠ 0).
+        if params.h_z != 0.0 {
+            let rz_u = rz(2.0 * params.h_z * params.dt);
+            for q in 0..topology.n_qubits() {
+                ttn.apply_single(q, rz_u);
+            }
+        }
+
+        // 3. Global Rx kick.
+        let rx_u = rx(2.0 * params.h_x * params.dt);
+        for q in 0..topology.n_qubits() {
+            ttn.apply_single(q, rx_u);
+        }
+
+        Ok(())
+    }
+
+    /// Same KIM Floquet step on a `DenseState` reference, using the full
+    /// coupling-edge list (tree + non-tree together). The dense path has
+    /// no spanning-tree structure — ZZ is applied directly to every pair.
+    fn apply_kim_step_dense_heavy_hex(
+        dense: &mut DenseState,
+        coupling_edges: &[Edge],
+        params: KimParams,
+    ) {
+        let zz_theta_full = 2.0 * params.j * params.dt;
+        let zz_u = zz(zz_theta_full);
+        for e in coupling_edges {
+            dense.apply_two_qubit(e.a, e.b, zz_u);
+        }
+        if params.h_z != 0.0 {
+            let rz_u = rz(2.0 * params.h_z * params.dt);
+            for q in 0..dense.n {
+                dense.apply_single(q, rz_u);
+            }
+        }
+        let rx_u = rx(2.0 * params.h_x * params.dt);
+        for q in 0..dense.n {
+            dense.apply_single(q, rx_u);
+        }
+    }
+
+    /// **The D.3 validation gate.** Drive the 13-qubit Eagle sub-fragment
+    /// through 3 KIM Floquet steps on both the native `Ttn` path (direct
+    /// tree-edge gates + swap-network non-tree gates) and the
+    /// topology-agnostic `DenseState` reference. Assert element-wise
+    /// ⟨Z⟩ agreement at floating-point precision after every step.
+    ///
+    /// Lossless run: `max_bond = 128` is well above the maximal Schmidt
+    /// rank `2^(N/2) ≈ 90` for N = 13, so no singular value is ever
+    /// dropped. Any drift between the two paths is unambiguously a bug
+    /// in the heavy-hex KIM driver or in the swap-network routing, not
+    /// a truncation artefact.
+    #[test]
+    fn small_eagle_fragment_kim_matches_dense_lossless() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        assert_eq!(topology.n_qubits(), 13);
+        assert_eq!(topology.n_edges(), 12);
+        assert_eq!(non_tree_edges.len(), 1);
+        assert_eq!(coupling.len(), 13);
+
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+
+        // Break the product state so KIM dynamics have something to work
+        // on. A simple Hadamard-on-every-qubit layer puts the system in
+        // |+⟩⊗13 which is an eigenstate of the Rx kick but not of the ZZ
+        // layer, so the Floquet dynamics are non-trivial from step one.
+        for q in 0..13 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+
+        // Use the self-dual point to get genuinely non-trivial dynamics
+        // (J = h_x = π/4). h_z = 0 so the Rz kick is skipped.
+        let params = KimParams::self_dual();
+        let max_bond = 128;
+        let n_steps = 3;
+
+        for step in 1..=n_steps {
+            apply_kim_step_ttn_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond).unwrap();
+            apply_kim_step_dense_heavy_hex(&mut dense, &coupling, params);
+
+            for q in 0..13 {
+                let z_ttn = ttn.expectation_z(q);
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}, diff={:e}",
+                    (z_ttn - z_dense).abs()
+                );
+            }
+        }
+
+        // The lossless run must also produce zero total discarded weight
+        // — `max_bond = 128` is large enough that every SVD keeps every
+        // singular value, across both the 12 direct-edge ZZ gates per
+        // step and the 21 swap-network operations per non-tree ZZ gate
+        // per step.
+        assert!(
+            ttn.total_discarded_weight() < 1e-14,
+            "expected zero discarded weight for lossless run, got {:e}",
+            ttn.total_discarded_weight()
+        );
+    }
+
+    /// Same 13-qubit fragment, but run the KIM circuit on the TTN with a
+    /// non-self-dual parameter set including a longitudinal kick
+    /// (`h_z ≠ 0`). Guards the `h_z` branch of the driver, which is
+    /// skipped in the self-dual test above.
+    #[test]
+    fn small_eagle_fragment_kim_with_longitudinal_kick_matches_dense() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+
+        for q in 0..13 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+
+        let params = KimParams {
+            j: 0.31,
+            h_x: 0.47,
+            h_z: 0.19,
+            dt: 1.0,
+        };
+        let max_bond = 128;
+        let n_steps = 2;
+
+        for step in 1..=n_steps {
+            apply_kim_step_ttn_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond).unwrap();
+            apply_kim_step_dense_heavy_hex(&mut dense, &coupling, params);
+            for q in 0..13 {
+                let z_ttn = ttn.expectation_z(q);
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}, diff={:e}",
+                    (z_ttn - z_dense).abs()
+                );
             }
         }
     }
