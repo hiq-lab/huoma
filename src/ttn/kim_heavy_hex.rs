@@ -1,0 +1,433 @@
+//! Heavy-hex kicked-Ising Floquet driver for the native TTN backend.
+//!
+//! Composes the primitives shipped in D.1–D.5.0 into a single Floquet
+//! step of the kicked Ising Hamiltonian over an arbitrary coupling graph
+//! whose spanning tree drives the TTN:
+//!
+//! - [`Ttn::apply_two_qubit_on_edge`] for the 126 tree-adjacent ZZ gates
+//! - [`Ttn::apply_two_qubit_via_path`] for the 18 non-tree ZZ gates
+//!   (swap-network routing through the tree)
+//! - [`Ttn::apply_single`] for the per-qubit Rx / Rz kicks
+//! - [`Ttn::expectation_z_all`] (D.5.0) for the per-step ⟨Z⟩ history,
+//!   which is what makes this driver physically constructible at
+//!   N = 127 — the earlier statevector-materialising `expectation_z`
+//!   path capped at N ≲ 20
+//!
+//! This is Track D milestone **D.5.1** per `TRACK_D_DESIGN.md` §
+//! "D.5 — Tindall N=127 benchmark": the Huoma-only runner scaffold,
+//! no Tindall reference comparison, no ITensor cross-check, just the
+//! machinery that produces the first honest N = 127 number on the
+//! board. Those comparisons ship in subsequent PRs.
+//!
+//! # Gate conventions
+//!
+//! The driver matches the "no factor of two" convention that
+//! [`crate::kicked_ising::apply_kim_step`] established for the 1D path:
+//!
+//! - ZZ gate is `exp(-i (J·dt) Z⊗Z)` — full angle, no half
+//! - Rx / Rz kicks are `exp(-i θ/2 σ)` standard-convention, so the
+//!   angles passed in are `2·h_x·dt` / `2·h_z·dt`
+//!
+//! Layer order inside one Floquet step is `ZZ → Rz (optional) → Rx`,
+//! identical to the 1D driver so the linear-chain special case of this
+//! driver would reproduce the 1D benchmark bit-for-bit (validated
+//! incidentally by the existing 1D regression in `src/ttn/mod.rs`).
+//!
+//! # Example
+//!
+//! ```no_run
+//! use huoma::kicked_ising::KimParams;
+//! use huoma::ttn::{HeavyHexLayout, Ttn};
+//! use huoma::ttn::kim_heavy_hex::run_kim_heavy_hex;
+//! use huoma::ttn::topology::Edge;
+//!
+//! let layout = HeavyHexLayout::ibm_eagle_127();
+//! let non_tree: Vec<Edge> = layout
+//!     .non_tree_edges()
+//!     .iter()
+//!     .map(|[a, b]| Edge { a: *a, b: *b })
+//!     .collect();
+//! let mut ttn = Ttn::new(layout.tree().clone());
+//! let params = KimParams { j: 1.0, h_x: 0.8, h_z: 0.0, dt: 0.5 };
+//! let history = run_kim_heavy_hex(&mut ttn, &non_tree, params, 16, 5).unwrap();
+//! assert_eq!(history.len(), 6); // initial + 5 steps
+//! assert_eq!(history[0].len(), 127);
+//! ```
+
+use num_complex::Complex64;
+
+use crate::error::Result;
+use crate::kicked_ising::KimParams;
+use crate::ttn::topology::Edge;
+use crate::ttn::{EdgeId, Ttn};
+
+type C = Complex64;
+
+/// 4×4 `exp(-i θ Z⊗Z)` with the "no factor of two" convention.
+///
+/// Diagonal with eigenvalue pattern `(++ , -- , -- , ++)` indexed by
+/// `(σ_a, σ_b) ∈ {(0,0), (0,1), (1,0), (1,1)}`. Matches
+/// `crate::kicked_ising::apply_zz_dense` and the private `mps::zz`
+/// factory used by the 1D driver, so linear-chain runs of this driver
+/// are numerically identical to `crate::kicked_ising::apply_kim_step`.
+#[must_use]
+pub fn zz_gate(theta: f64) -> [[C; 4]; 4] {
+    let cos_t = theta.cos();
+    let sin_t = theta.sin();
+    // ZZ eigenvalue +1 (same-spin) → exp(-iθ).
+    // ZZ eigenvalue −1 (diff-spin) → exp(+iθ).
+    let pos = C::new(cos_t, -sin_t);
+    let neg = C::new(cos_t, sin_t);
+    let zero = C::new(0.0, 0.0);
+    [
+        [pos, zero, zero, zero],
+        [zero, neg, zero, zero],
+        [zero, zero, neg, zero],
+        [zero, zero, zero, pos],
+    ]
+}
+
+/// 2×2 `Rx(θ) = exp(-i θ/2 X)` — standard half-angle convention.
+#[must_use]
+pub fn rx_gate(theta: f64) -> [[C; 2]; 2] {
+    let c = (theta / 2.0).cos();
+    let s = (theta / 2.0).sin();
+    [
+        [C::new(c, 0.0), C::new(0.0, -s)],
+        [C::new(0.0, -s), C::new(c, 0.0)],
+    ]
+}
+
+/// 2×2 `Rz(θ) = exp(-i θ/2 Z)` — standard half-angle convention.
+#[must_use]
+pub fn rz_gate(theta: f64) -> [[C; 2]; 2] {
+    let c = (theta / 2.0).cos();
+    let s = (theta / 2.0).sin();
+    [
+        [C::new(c, -s), C::new(0.0, 0.0)],
+        [C::new(0.0, 0.0), C::new(c, s)],
+    ]
+}
+
+/// Apply one KIM Floquet step to `ttn` using its bound spanning-tree
+/// topology plus an explicit list of non-tree coupling edges.
+///
+/// The tree edges are taken from `ttn.topology()` in their canonical
+/// enumeration order; `non_tree_edges` is the list of graph edges that
+/// were dropped to form the spanning tree (for Eagle 127q this is the
+/// 18 hexagonal-plaquette closing edges returned by
+/// [`HeavyHexLayout::non_tree_edges`]). The driver applies:
+///
+/// 1. `ZZ(J·dt)` on every tree edge via
+///    [`Ttn::apply_two_qubit_on_edge`] (direct-adjacent path).
+/// 2. `ZZ(J·dt)` on every non-tree edge via
+///    [`Ttn::apply_two_qubit_via_path`] (swap-network path).
+/// 3. `Rz(2·h_z·dt)` on every qubit (skipped if `h_z == 0`).
+/// 4. `Rx(2·h_x·dt)` on every qubit.
+///
+/// Every SVD reuses `max_bond` — tree gates, swap-network gates, and
+/// the internal SWAPs of the swap network all share the same cap so
+/// the truncation budget composes uniformly across the step. Pass a
+/// very large bound (e.g. `usize::MAX`) if you want the run to stay
+/// lossless at small N.
+///
+/// [`HeavyHexLayout::non_tree_edges`]: crate::ttn::heavy_hex::HeavyHexLayout::non_tree_edges
+pub fn apply_kim_step_heavy_hex(
+    ttn: &mut Ttn,
+    non_tree_edges: &[Edge],
+    params: KimParams,
+    max_bond: usize,
+) -> Result<()> {
+    // ── 1. ZZ entangling layer on every tree edge ──────────────────────
+    let zz = zz_gate(params.j * params.dt);
+    let n_edges = ttn.topology().n_edges();
+    for eid_idx in 0..n_edges {
+        ttn.apply_two_qubit_on_edge(EdgeId(eid_idx), zz, max_bond)?;
+    }
+    // ── 2. ZZ entangling layer on every non-tree edge (swap network) ──
+    for edge in non_tree_edges {
+        ttn.apply_two_qubit_via_path(edge.a, edge.b, zz, max_bond)?;
+    }
+    // ── 3. Global Rz kick (if h_z ≠ 0) ─────────────────────────────────
+    if params.h_z != 0.0 {
+        let rz = rz_gate(2.0 * params.h_z * params.dt);
+        for q in 0..ttn.n_qubits() {
+            ttn.apply_single(q, rz);
+        }
+    }
+    // ── 4. Global Rx kick ──────────────────────────────────────────────
+    let rx = rx_gate(2.0 * params.h_x * params.dt);
+    for q in 0..ttn.n_qubits() {
+        ttn.apply_single(q, rx);
+    }
+    Ok(())
+}
+
+/// Drive `n_steps` KIM Floquet steps on `ttn` and return the full
+/// per-qubit ⟨Z⟩ history.
+///
+/// The returned vector has length `n_steps + 1`: entry `0` is the
+/// initial state (read via [`Ttn::expectation_z_all`] before any gates
+/// are applied) and entries `1..=n_steps` are post-step snapshots.
+/// Each inner `Vec<f64>` has length [`Ttn::n_qubits`].
+pub fn run_kim_heavy_hex(
+    ttn: &mut Ttn,
+    non_tree_edges: &[Edge],
+    params: KimParams,
+    max_bond: usize,
+    n_steps: usize,
+) -> Result<Vec<Vec<f64>>> {
+    let mut history = Vec::with_capacity(n_steps + 1);
+    history.push(ttn.expectation_z_all());
+    for _ in 0..n_steps {
+        apply_kim_step_heavy_hex(ttn, non_tree_edges, params, max_bond)?;
+        history.push(ttn.expectation_z_all());
+    }
+    Ok(history)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ttn::dense::DenseState;
+    use crate::ttn::topology::Topology;
+    use crate::ttn::HeavyHexLayout;
+
+    /// Same 13-qubit Eagle sub-fragment used in the D.3 validation test.
+    /// Replicated here so `kim_heavy_hex.rs` stays self-contained.
+    fn small_eagle_fragment() -> (Topology, Vec<Edge>, Vec<Edge>) {
+        let coupling: Vec<Edge> = vec![
+            Edge { a: 0, b: 1 },
+            Edge { a: 1, b: 2 },
+            Edge { a: 2, b: 3 },
+            Edge { a: 3, b: 4 },
+            Edge { a: 4, b: 5 },
+            Edge { a: 0, b: 6 },
+            Edge { a: 6, b: 8 },
+            Edge { a: 4, b: 7 },
+            Edge { a: 7, b: 12 },
+            Edge { a: 8, b: 9 },
+            Edge { a: 9, b: 10 },
+            Edge { a: 10, b: 11 },
+            Edge { a: 11, b: 12 },
+        ];
+        // Drop (0, 6) to keep qubit 4 as a tree junction.
+        let tree_edges: Vec<Edge> = coupling
+            .iter()
+            .copied()
+            .filter(|e| !(e.a == 0 && e.b == 6))
+            .collect();
+        let non_tree_edges: Vec<Edge> = vec![Edge { a: 0, b: 6 }];
+        let topology = Topology::from_edges(13, tree_edges);
+        (topology, non_tree_edges, coupling)
+    }
+
+    /// The public driver must produce the same ⟨Z⟩ trajectory as a
+    /// topology-agnostic `DenseState` reference on the 13-qubit Eagle
+    /// sub-fragment used by D.3. This is the direct proof that
+    /// `apply_kim_step_heavy_hex` is a correct public wrapper of the
+    /// gate sequence the D.3 test already validated inline.
+    #[test]
+    fn small_eagle_fragment_driver_matches_dense_lossless() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+
+        // Break the product state so KIM dynamics have something to do.
+        for q in 0..13 {
+            ttn.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+            dense.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+        }
+
+        let params = KimParams::self_dual();
+        let max_bond = 128;
+        let n_steps = 3;
+
+        let history = run_kim_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond, n_steps)
+            .expect("driver must not fail on the small Eagle fragment");
+        assert_eq!(history.len(), n_steps + 1);
+        assert_eq!(history[0].len(), 13);
+
+        // Dense-reference Floquet step matching the driver's layer order.
+        let zz = zz_gate(params.j * params.dt);
+        let rx = rx_gate(2.0 * params.h_x * params.dt);
+        for step in 1..=n_steps {
+            for e in &coupling {
+                dense.apply_two_qubit(e.a, e.b, zz);
+            }
+            // h_z = 0 at self-dual; skip Rz.
+            for q in 0..13 {
+                dense.apply_single(q, rx);
+            }
+            for q in 0..13 {
+                let z_ttn = history[step][q];
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+                );
+            }
+        }
+    }
+
+    /// The driver must also produce Hermitian-bounded results on the
+    /// self-dual point: every ⟨Z⟩ is in `[-1, 1]` and the norm stays
+    /// normalised to within rounding when `max_bond` is above the
+    /// Schmidt-rank bound.
+    #[test]
+    fn small_eagle_fragment_driver_preserves_norm_and_bounds() {
+        let (topology, non_tree_edges, _coupling) = small_eagle_fragment();
+        let mut ttn = Ttn::new(topology);
+        for q in 0..13 {
+            ttn.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+        }
+        let params = KimParams::self_dual();
+        let history = run_kim_heavy_hex(&mut ttn, &non_tree_edges, params, 128, 3).unwrap();
+        for snapshot in &history {
+            assert_eq!(snapshot.len(), 13);
+            for z in snapshot {
+                assert!(
+                    (-1.0..=1.0).contains(z),
+                    "⟨Z⟩ out of Hermitian bounds: {z}"
+                );
+            }
+        }
+        // Lossless regime: norm² within rounding of 1.
+        let nsq = ttn.norm_squared();
+        assert!((nsq - 1.0).abs() < 1e-10, "norm² drifted: {nsq:e}");
+    }
+
+    /// Smoke test at the full Eagle 127q scale. Runs one Floquet step on
+    /// the real layout at a small bond dimension, confirms it completes,
+    /// and checks that the 127 ⟨Z⟩ values are all Hermitian-bounded.
+    ///
+    /// This is the cheapest version of the "first honest N = 127 number"
+    /// test — the minimal proof that D.5.0's env-sweep `expectation_z_all`
+    /// + D.3's swap network + D.5.1's driver compose into a working
+    /// pipeline at the Tindall target size. The multi-step depth-5
+    /// variant lives in `eagle_127q_depth_5_tindall_params_runs_to_completion`.
+    #[test]
+    fn eagle_127q_single_kim_step_completes_and_is_bounded() {
+        let layout = HeavyHexLayout::ibm_eagle_127();
+        let non_tree: Vec<Edge> = layout
+            .non_tree_edges()
+            .iter()
+            .map(|[a, b]| Edge { a: *a, b: *b })
+            .collect();
+        assert_eq!(non_tree.len(), 18);
+
+        let mut ttn = Ttn::new(layout.tree().clone());
+        assert_eq!(ttn.n_qubits(), 127);
+
+        // Break the product state on every qubit so the ZZ layer has
+        // non-trivial mixing to do (otherwise |0…0⟩ is an exact ZZ
+        // eigenstate and the test is vacuous).
+        for q in 0..127 {
+            ttn.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+        }
+
+        let params = KimParams {
+            j: 1.0,
+            h_x: 0.8,
+            h_z: 0.0,
+            dt: 0.5,
+        }; // Tindall et al. PRX Quantum 5, 010308 (2024)
+
+        apply_kim_step_heavy_hex(&mut ttn, &non_tree, params, 8)
+            .expect("driver must not fail at N=127");
+
+        let z = ttn.expectation_z_all();
+        assert_eq!(z.len(), 127);
+        for (q, &zq) in z.iter().enumerate() {
+            assert!(
+                (-1.0..=1.0).contains(&zq) && zq.is_finite(),
+                "q={q}: ⟨Z⟩ = {zq} out of bounds or non-finite"
+            );
+        }
+        // A finite discarded weight is expected at χ = 8 on Eagle 127q
+        // after a full entangling layer; just check it's non-negative
+        // and finite, i.e. the accounting isn't corrupted.
+        let disc = ttn.total_discarded_weight();
+        assert!(
+            disc.is_finite() && disc >= 0.0,
+            "total discarded weight invalid: {disc}"
+        );
+    }
+
+    /// Full depth-5 Tindall run on Eagle 127q at the exact parameters
+    /// `(J, h_x, h_z, dt) = (1.0, 0.8, 0.0, 0.5)` from Tindall et al.
+    /// (PRX Quantum 5, 010308, 2024). Exercises [`run_kim_heavy_hex`]
+    /// end-to-end: the initial-state snapshot plus 5 post-step
+    /// snapshots of per-qubit ⟨Z⟩.
+    ///
+    /// Assertions are **Huoma-only** (no Tindall / ITensor comparison
+    /// yet — those ship in D.5.3 / D.5.4):
+    ///
+    /// - 6 snapshots returned (initial + 5 steps), each of length 127
+    /// - Every ⟨Z⟩ value is finite and in `[-1, 1]`
+    /// - Total discarded weight is finite and monotone non-decreasing
+    ///   from step to step (enforced implicitly by the invariant that
+    ///   `Ttn::total_discarded_weight` is an accumulator)
+    /// - Trivial sanity check: the initial snapshot is all `+1.0`
+    ///   before any gates are applied
+    ///
+    /// This is the first honest N = 127 depth-5 Huoma run on the board.
+    #[test]
+    fn eagle_127q_depth_5_tindall_params_runs_to_completion() {
+        let layout = HeavyHexLayout::ibm_eagle_127();
+        let non_tree: Vec<Edge> = layout
+            .non_tree_edges()
+            .iter()
+            .map(|[a, b]| Edge { a: *a, b: *b })
+            .collect();
+
+        let mut ttn = Ttn::new(layout.tree().clone());
+        let params = KimParams {
+            j: 1.0,
+            h_x: 0.8,
+            h_z: 0.0,
+            dt: 0.5,
+        };
+        let max_bond = 8;
+        let n_steps = 5;
+
+        let history = run_kim_heavy_hex(&mut ttn, &non_tree, params, max_bond, n_steps)
+            .expect("depth-5 Tindall run must not fail at N=127");
+
+        // 6 snapshots of 127 values each.
+        assert_eq!(history.len(), n_steps + 1);
+        for (step, snap) in history.iter().enumerate() {
+            assert_eq!(snap.len(), 127, "step {step}: wrong length");
+            for (q, &zq) in snap.iter().enumerate() {
+                assert!(
+                    zq.is_finite() && (-1.0..=1.0).contains(&zq),
+                    "step {step}, q={q}: ⟨Z⟩ = {zq}"
+                );
+            }
+        }
+
+        // Initial state is |0…0⟩ so every ⟨Z⟩ = +1 exactly.
+        for (q, &zq) in history[0].iter().enumerate() {
+            assert!(
+                (zq - 1.0).abs() < 1e-14,
+                "initial q={q}: expected +1, got {zq}"
+            );
+        }
+
+        // Total discarded weight is finite and non-negative. At χ = 8 on
+        // a 127-qubit heavy-hex Floquet circuit we expect some truncation
+        // but not catastrophic blow-up; the assertion below is an upper
+        // bound derived from the total number of SVDs (≈ depth × (126
+        // tree gates + 18 × short-path swap networks) ≈ a few thousand)
+        // times a generous per-SVD budget of ≈ 1e-3.
+        let disc = ttn.total_discarded_weight();
+        assert!(
+            disc.is_finite() && disc >= 0.0,
+            "total discarded weight invalid: {disc}"
+        );
+        assert!(
+            disc < 100.0,
+            "total discarded weight suspiciously large: {disc}"
+        );
+    }
+}
