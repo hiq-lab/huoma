@@ -18,6 +18,7 @@
 //!
 //! See `TRACK_D_DESIGN.md` for the full milestone roadmap.
 
+pub mod allocator;
 pub mod contraction;
 pub mod gauge;
 pub mod heavy_hex;
