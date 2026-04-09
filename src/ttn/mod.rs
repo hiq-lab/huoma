@@ -303,20 +303,80 @@ impl Ttn {
     }
 
     /// Single-qubit ⟨Z⟩ at qubit `target`, normalised by the state's 2-norm².
+    ///
+    /// **Native tree path (D.5.0):** moves the orthogonality centre to
+    /// `target` via [`gauge::move_center`] (O(tree-distance · χ³)) and reads
+    /// the expectation value from the local site tensor in O(χ^deg · 2).
+    /// No dense statevector is materialised, so this method scales to the
+    /// full Eagle 127q TTN — the statevector-materialising implementation
+    /// that shipped in D.2 was capped at N ≲ 20. The mutable receiver
+    /// reflects the gauge side-effect; after the call, the TTN's
+    /// orthogonality centre sits at `target`.
+    ///
+    /// **Linear path:** delegates directly to [`Mps::expectation_z`], which
+    /// already uses a gauge-aware environment sweep and is `&self`.
     #[must_use]
-    pub fn expectation_z(&self, target: usize) -> f64 {
-        match &self.backend {
+    pub fn expectation_z(&mut self, target: usize) -> f64 {
+        match &mut self.backend {
             Backend::Linear(mps) => mps.expectation_z(target),
-            Backend::Tree { sites, .. } => expectation_z_tree(sites, &self.topology, target),
+            Backend::Tree { sites, center, .. } => {
+                gauge::move_center(sites, &self.topology, *center, target);
+                *center = target;
+                expectation_z_at_center(&sites[target])
+            }
         }
     }
 
+    /// Compute `⟨Z_q⟩` for every qubit in a single DFS traversal from the
+    /// current orthogonality centre. Returns a vector of length
+    /// [`Self::n_qubits`] indexed by qubit id.
+    ///
+    /// The traversal moves the centre along tree edges so that each edge of
+    /// the spanning tree is walked at most twice across the whole call, so
+    /// the total cost is `O(N · χ³)` rather than the `O(N²)` of calling
+    /// [`Self::expectation_z`] in a naïve loop from a fixed initial centre.
+    /// At `N = 127` with `χ ≤ 64` this is milliseconds, not minutes.
+    pub fn expectation_z_all(&mut self) -> Vec<f64> {
+        let n = self.n_qubits();
+        let mut result = vec![0.0_f64; n];
+        match &mut self.backend {
+            Backend::Linear(mps) => {
+                for q in 0..n {
+                    result[q] = mps.expectation_z(q);
+                }
+            }
+            Backend::Tree { sites, center, .. } => {
+                // DFS order from the current centre — consecutive visits
+                // are either tree-adjacent or, at worst, separated by the
+                // Euler-tour overhead of a pair of backtrack edges, which
+                // still totals O(n_edges · 2) moves across the whole call.
+                let order = dfs_order(&self.topology, *center);
+                for &q in &order {
+                    gauge::move_center(sites, &self.topology, *center, q);
+                    *center = q;
+                    result[q] = expectation_z_at_center(&sites[q]);
+                }
+            }
+        }
+        result
+    }
+
     /// Wave-function 2-norm squared.
+    ///
+    /// In site-canonical form (enforced by every gate-application code path
+    /// in this module) the 2-norm² of the state equals the 2-norm² of the
+    /// orthogonality-centre site alone, since every other site is an
+    /// isometry with respect to its centre-ward axis. No tree traversal
+    /// required — this is O(χ^deg · 2), not O(2^N).
     #[must_use]
     pub fn norm_squared(&self) -> f64 {
         match &self.backend {
             Backend::Linear(mps) => mps.norm_squared(),
-            Backend::Tree { sites, .. } => norm_squared_tree(sites, &self.topology),
+            Backend::Tree { sites, center, .. } => sites[*center]
+                .data
+                .iter()
+                .map(|c| c.norm_sqr())
+                .sum(),
         }
     }
 
@@ -404,36 +464,75 @@ fn apply_single_tree(site: &mut TtnSite, u: [[C; 2]; 2]) {
     }
 }
 
-/// Normalised single-qubit ⟨Z⟩ computed by contracting the whole tree to a
-/// dense statevector. Caps out at `n_qubits ≤ ~20` but is honest and
-/// trivially correct, which is what the D.2 tests need. Replaced by a
-/// gauge-aware environment sweep in a later milestone if the cost becomes
-/// a bottleneck for D.5.
-fn expectation_z_tree(sites: &[TtnSite], topology: &Topology, target: usize) -> f64 {
-    let n = topology.n_qubits();
-    assert!(target < n);
-    let psi = contraction::tree_to_statevector(sites, topology);
-    let shift = n - 1 - target;
-    let mut num = 0.0_f64;
-    let mut denom = 0.0_f64;
-    for (k, amp) in psi.iter().enumerate() {
-        let prob = amp.norm_sqr();
-        denom += prob;
-        if ((k >> shift) & 1) == 0 {
-            num += prob;
-        } else {
-            num -= prob;
-        }
+/// Normalised single-qubit ⟨Z⟩ read from a TTN site that is assumed to
+/// currently be the orthogonality centre of the state.
+///
+/// In site-canonical form every site except the centre is an isometry with
+/// respect to its centre-ward axis, so any local observable on the centre
+/// reduces to a direct sum over the centre's tensor data: the row-major
+/// storage places the physical axis last, so every virtual multi-index
+/// `v` has its `σ = 0` amplitude at `data[2v]` and its `σ = 1` amplitude
+/// at `data[2v + 1]`. The normalised expectation is
+///
+/// ```text
+/// ⟨Z⟩  =  (Σ_v |data[2v]|² − Σ_v |data[2v+1]|²) / Σ_v (|data[2v]|² + |data[2v+1]|²)
+/// ```
+///
+/// and the denominator is the total 2-norm² of the state (same as
+/// [`Ttn::norm_squared`]). A zero-norm state is reported as `⟨Z⟩ = 0`
+/// rather than NaN so downstream asserts don't trip on degenerate inputs.
+fn expectation_z_at_center(site: &TtnSite) -> f64 {
+    let nd = site.rank();
+    let phys_dim = site.shape[nd - 1];
+    debug_assert_eq!(phys_dim, 2, "physical leg must have dimension 2");
+    let virt_count = site.data.len() / phys_dim;
+    let mut p0 = 0.0_f64;
+    let mut p1 = 0.0_f64;
+    for v in 0..virt_count {
+        p0 += site.data[2 * v].norm_sqr();
+        p1 += site.data[2 * v + 1].norm_sqr();
     }
-    if denom < 1e-30 { 0.0 } else { num / denom }
+    let denom = p0 + p1;
+    if denom < 1e-30 {
+        0.0
+    } else {
+        (p0 - p1) / denom
+    }
 }
 
-/// 2-norm² of the state computed via the full statevector contraction.
-fn norm_squared_tree(sites: &[TtnSite], topology: &Topology) -> f64 {
-    contraction::tree_to_statevector(sites, topology)
-        .iter()
-        .map(|a| a.norm_sqr())
-        .sum()
+/// Depth-first tree traversal order from `start`. Used by
+/// [`Ttn::expectation_z_all`] to route the orthogonality-centre walk so
+/// that each tree edge is traversed at most twice across the whole sweep
+/// (the standard Euler-tour bound), keeping the observable pass at
+/// `O(N · χ³)` instead of `O(N²)`. Output is a deterministic pre-order:
+/// children are pushed in reverse of their `neighbours()` listing so they
+/// come off the stack in the same order the topology reports them.
+fn dfs_order(topology: &Topology, start: usize) -> Vec<usize> {
+    let n = topology.n_qubits();
+    let mut order = Vec::with_capacity(n);
+    if n == 0 {
+        return order;
+    }
+    let mut visited = vec![false; n];
+    let mut stack: Vec<usize> = Vec::with_capacity(n);
+    stack.push(start);
+    while let Some(u) = stack.pop() {
+        if visited[u] {
+            continue;
+        }
+        visited[u] = true;
+        order.push(u);
+        // Push neighbours in reverse so the first-listed neighbour is
+        // popped first, giving a stable pre-order deterministic with
+        // respect to the topology's edge-enumeration.
+        for &eid in topology.neighbours(u).iter().rev() {
+            let nb = topology.edge(eid).other(u);
+            if !visited[nb] {
+                stack.push(nb);
+            }
+        }
+    }
+    order
 }
 
 #[cfg(test)]
@@ -462,7 +561,7 @@ mod tests {
     #[test]
     fn ttn_new_initialises_to_product_state() {
         let t = Topology::linear_chain(6);
-        let ttn = Ttn::new(t);
+        let mut ttn = Ttn::new(t);
         assert_eq!(ttn.n_qubits(), 6);
         // |0…0⟩: every ⟨Z⟩ = +1.
         for q in 0..6 {
@@ -1031,6 +1130,171 @@ mod tests {
             Backend::Tree { .. } => {
                 panic!("ttn_backend_mut called on non-linear backend")
             }
+        }
+    }
+
+    // ─── D.5.0 env-sweep expectation_z anchors ─────────────────────────
+    //
+    // The native `Ttn::expectation_z` and `expectation_z_all` walk the
+    // tree in site-canonical form and read the expectation value from the
+    // local centre tensor. These tests pin the env-sweep implementation
+    // against (a) the existing `DenseState` reference on the D.2
+    // Y-junction / star anchors, and (b) its own batched variant.
+
+    #[test]
+    fn expectation_z_all_matches_per_qubit_loop_on_y_junction() {
+        // Drive a Y-junction through a non-trivial circuit and assert that
+        // `expectation_z_all` produces the same per-qubit values as the
+        // scalar `expectation_z(q)` called in a loop. Covers the case
+        // where the DFS centre-walk crosses the junction repeatedly.
+        let topology = y_junction();
+        let mut ttn_a = Ttn::new(topology.clone());
+        let mut ttn_b = Ttn::new(topology.clone());
+        for q in 0..4 {
+            ttn_a.apply_single(q, hadamard());
+            ttn_b.apply_single(q, hadamard());
+            ttn_a.apply_single(q, rx(0.17 + 0.09 * q as f64));
+            ttn_b.apply_single(q, rx(0.17 + 0.09 * q as f64));
+        }
+        for eid in 0..topology.n_edges() {
+            ttn_a.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 64).unwrap();
+            ttn_b.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 64).unwrap();
+            ttn_a.apply_two_qubit_on_edge(EdgeId(eid), zz(0.33), 64).unwrap();
+            ttn_b.apply_two_qubit_on_edge(EdgeId(eid), zz(0.33), 64).unwrap();
+        }
+        let batched = ttn_a.expectation_z_all();
+        let looped: Vec<f64> = (0..4).map(|q| ttn_b.expectation_z(q)).collect();
+        assert_eq!(batched.len(), 4);
+        for q in 0..4 {
+            assert!(
+                (batched[q] - looped[q]).abs() < 1e-13,
+                "q={q}: batched={:e}, looped={:e}",
+                batched[q],
+                looped[q]
+            );
+        }
+    }
+
+    #[test]
+    fn expectation_z_all_matches_dense_on_degree_four_star() {
+        // Native env-sweep `expectation_z_all` must agree with the
+        // topology-agnostic `DenseState` reference element-wise, with the
+        // TTN in an arbitrary post-gate gauge state. Lossless run.
+        let topology = star_four();
+        let mut ttn = Ttn::new(topology.clone());
+        let mut dense = DenseState::zero(5);
+        for q in 0..5 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+        for _ in 0..2 {
+            for eid in 0..topology.n_edges() {
+                let edge = topology.edge(EdgeId(eid));
+                ttn.apply_two_qubit_on_edge(EdgeId(eid), zz(0.19), 128).unwrap();
+                dense.apply_two_qubit(edge.a, edge.b, zz(0.19));
+                ttn.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 128).unwrap();
+                dense.apply_two_qubit(edge.a, edge.b, cnot());
+            }
+        }
+        let batched = ttn.expectation_z_all();
+        for q in 0..5 {
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (batched[q] - z_dense).abs() < 1e-12,
+                "q={q}: ttn={:e}, dense={:e}",
+                batched[q],
+                z_dense
+            );
+        }
+    }
+
+    #[test]
+    fn env_sweep_expectation_z_matches_dense_on_small_eagle_fragment() {
+        // End-to-end check on the 13-qubit Eagle sub-fragment used by
+        // `small_eagle_fragment_kim_matches_dense_lossless` but with the
+        // comparison performed via the new env-sweep path rather than the
+        // previous statevector-materialising implementation. This is the
+        // direct proof that D.5.0 is a drop-in replacement on a topology
+        // that has a cycle and a real heavy-hex junction.
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+        for q in 0..13 {
+            ttn.apply_single(q, hadamard());
+            dense.apply_single(q, hadamard());
+        }
+        let params = KimParams::self_dual();
+        let max_bond = 128;
+        for _ in 0..3 {
+            apply_kim_step_ttn_heavy_hex(&mut ttn, &non_tree_edges, params, max_bond).unwrap();
+            apply_kim_step_dense_heavy_hex(&mut dense, &coupling, params);
+        }
+        let z_ttn = ttn.expectation_z_all();
+        for q in 0..13 {
+            let z_dense = dense.expectation_z(q);
+            assert!(
+                (z_ttn[q] - z_dense).abs() < 1e-11,
+                "q={q}: ttn={:e}, dense={:e}",
+                z_ttn[q],
+                z_dense
+            );
+        }
+        // The env-sweep norm_squared should also match the lossless unit
+        // norm across the full run (the Hadamard layer produces a unit
+        // product, every gate is unitary, max_bond is above the max Schmidt
+        // rank so no SV is dropped).
+        let norm_sq = ttn.norm_squared();
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-11,
+            "norm² drifted: {norm_sq:e}"
+        );
+    }
+
+    #[test]
+    fn norm_squared_on_product_state_is_unity_before_any_gates() {
+        // Sanity: for a fresh TTN on any topology the norm² read from
+        // the orthogonality-centre site is exactly 1.
+        for topology in [
+            Topology::linear_chain(6),
+            y_junction(),
+            star_four(),
+        ] {
+            let ttn = Ttn::new(topology);
+            let nsq = ttn.norm_squared();
+            assert!(
+                (nsq - 1.0).abs() < 1e-15,
+                "initial norm² should be 1, got {nsq:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn expectation_z_does_not_drift_across_repeated_calls() {
+        // Calling `expectation_z` moves the orthogonality centre as a
+        // side effect. The resulting state must still be valid — a second
+        // call on any qubit must produce the same value, within the noise
+        // of two QR sweeps. Guards against any accidental state corruption
+        // in the gauge-move path.
+        let topology = y_junction();
+        let mut ttn = Ttn::new(topology.clone());
+        for q in 0..4 {
+            ttn.apply_single(q, hadamard());
+            ttn.apply_single(q, rz(0.23 + 0.11 * q as f64));
+        }
+        for eid in 0..topology.n_edges() {
+            ttn.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 64).unwrap();
+        }
+        // First pass: record the snapshot.
+        let snap: Vec<f64> = (0..4).map(|q| ttn.expectation_z(q)).collect();
+        // Second pass: must match the snapshot element-wise to QR-roundoff.
+        let second: Vec<f64> = (0..4).map(|q| ttn.expectation_z(q)).collect();
+        for q in 0..4 {
+            assert!(
+                (snap[q] - second[q]).abs() < 1e-12,
+                "q={q} drifted between passes: first={}, second={}",
+                snap[q],
+                second[q]
+            );
         }
     }
 
