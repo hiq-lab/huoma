@@ -186,6 +186,95 @@ pub fn run_kim_heavy_hex(
     Ok(history)
 }
 
+/// Variant of [`apply_kim_step_heavy_hex`] that accepts a **per-edge
+/// χ profile** for the tree-adjacent gate layer — Track D milestone
+/// **D.5.2**, the matched-budget shootout entry point.
+///
+/// `chi_per_tree_edge[k]` is the bond-dimension cap used by the ZZ
+/// gate on `EdgeId(k)` of `ttn.topology()`. The slice must have length
+/// exactly `ttn.topology().n_edges()`; debug builds assert this.
+///
+/// The **non-tree** gate layer routes through
+/// [`Ttn::apply_two_qubit_via_path`], which internally performs a
+/// sequence of tree-adjacent SWAPs plus one final gate. Since the
+/// swap-network's internal SWAPs cross many tree edges in a single
+/// call, and threading a per-edge χ through the swap-network API
+/// would require growing its public signature, this driver uses a
+/// single `non_tree_chi` cap for the whole non-tree sequence. In
+/// practice setting `non_tree_chi = chi_max` (the upper clip of the
+/// allocator that produced `chi_per_tree_edge`) is the right default
+/// — the swap network is transient and the final gate lands on a tree
+/// edge which will respect its own per-edge cap on the next iteration.
+///
+/// Everything else (layer order, gate conventions, Rx / Rz kicks) is
+/// identical to the uniform-χ driver so linear-chain runs of the two
+/// drivers are numerically equivalent when `chi_per_tree_edge` is
+/// constant.
+pub fn apply_kim_step_heavy_hex_per_edge(
+    ttn: &mut Ttn,
+    non_tree_edges: &[Edge],
+    params: KimParams,
+    chi_per_tree_edge: &[usize],
+    non_tree_chi: usize,
+) -> Result<()> {
+    let n_edges = ttn.topology().n_edges();
+    assert_eq!(
+        chi_per_tree_edge.len(),
+        n_edges,
+        "chi_per_tree_edge must have one entry per tree edge"
+    );
+    let zz = zz_gate(params.j * params.dt);
+
+    // 1. ZZ entangling layer on every tree edge, with its own cap.
+    for eid_idx in 0..n_edges {
+        ttn.apply_two_qubit_on_edge(EdgeId(eid_idx), zz, chi_per_tree_edge[eid_idx])?;
+    }
+    // 2. ZZ entangling layer on every non-tree edge via swap network.
+    for edge in non_tree_edges {
+        ttn.apply_two_qubit_via_path(edge.a, edge.b, zz, non_tree_chi)?;
+    }
+    // 3. Global Rz kick (if h_z ≠ 0).
+    if params.h_z != 0.0 {
+        let rz = rz_gate(2.0 * params.h_z * params.dt);
+        for q in 0..ttn.n_qubits() {
+            ttn.apply_single(q, rz);
+        }
+    }
+    // 4. Global Rx kick.
+    let rx = rx_gate(2.0 * params.h_x * params.dt);
+    for q in 0..ttn.n_qubits() {
+        ttn.apply_single(q, rx);
+    }
+    Ok(())
+}
+
+/// Multi-step variant of [`apply_kim_step_heavy_hex_per_edge`] —
+/// runs `n_steps` Floquet steps at fixed `chi_per_tree_edge` and
+/// returns the per-qubit ⟨Z⟩ history, same shape as
+/// [`run_kim_heavy_hex`].
+pub fn run_kim_heavy_hex_per_edge(
+    ttn: &mut Ttn,
+    non_tree_edges: &[Edge],
+    params: KimParams,
+    chi_per_tree_edge: &[usize],
+    non_tree_chi: usize,
+    n_steps: usize,
+) -> Result<Vec<Vec<f64>>> {
+    let mut history = Vec::with_capacity(n_steps + 1);
+    history.push(ttn.expectation_z_all());
+    for _ in 0..n_steps {
+        apply_kim_step_heavy_hex_per_edge(
+            ttn,
+            non_tree_edges,
+            params,
+            chi_per_tree_edge,
+            non_tree_chi,
+        )?;
+        history.push(ttn.expectation_z_all());
+    }
+    Ok(history)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +441,112 @@ mod tests {
             disc.is_finite() && disc >= 0.0,
             "total discarded weight invalid: {disc}"
         );
+    }
+
+    /// The per-edge χ driver with a uniform profile must produce the
+    /// same per-qubit ⟨Z⟩ trajectory as the scalar-χ driver, because
+    /// every SVD takes the same cap either way.
+    #[test]
+    fn per_edge_driver_with_uniform_profile_matches_scalar_driver() {
+        let (topology, non_tree_edges, _coupling) = small_eagle_fragment();
+        let n_edges = topology.n_edges();
+
+        let mut ttn_scalar = Ttn::new(topology.clone());
+        let mut ttn_per_edge = Ttn::new(topology);
+        for q in 0..13 {
+            ttn_scalar.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+            ttn_per_edge.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+        }
+
+        let params = KimParams::self_dual();
+        let max_bond = 64;
+        let chi_uniform: Vec<usize> = vec![max_bond; n_edges];
+        let n_steps = 3;
+
+        let history_scalar =
+            run_kim_heavy_hex(&mut ttn_scalar, &non_tree_edges, params, max_bond, n_steps).unwrap();
+        let history_per_edge = run_kim_heavy_hex_per_edge(
+            &mut ttn_per_edge,
+            &non_tree_edges,
+            params,
+            &chi_uniform,
+            max_bond,
+            n_steps,
+        )
+        .unwrap();
+
+        assert_eq!(history_scalar.len(), history_per_edge.len());
+        for step in 0..history_scalar.len() {
+            for q in 0..13 {
+                let diff = (history_scalar[step][q] - history_per_edge[step][q]).abs();
+                assert!(
+                    diff < 1e-13,
+                    "step {step}, q={q}: scalar={:e}, per_edge={:e}, diff={:e}",
+                    history_scalar[step][q],
+                    history_per_edge[step][q],
+                    diff
+                );
+            }
+        }
+    }
+
+    /// The per-edge χ driver with a NON-UNIFORM profile (and a cap
+    /// large enough to stay lossless) must still agree with the dense
+    /// reference on the 13q Eagle sub-fragment. This proves the
+    /// per-edge dispatch in `apply_kim_step_heavy_hex_per_edge` is
+    /// correct for arbitrary profiles, not just the constant case.
+    #[test]
+    fn per_edge_driver_nonuniform_lossless_matches_dense() {
+        let (topology, non_tree_edges, coupling) = small_eagle_fragment();
+        let n_edges = topology.n_edges();
+
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(13);
+        for q in 0..13 {
+            ttn.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+            dense.apply_single(q, rx_gate(std::f64::consts::FRAC_PI_2));
+        }
+
+        // A deliberately non-uniform profile. Every entry is ≥ 64 so
+        // the run stays lossless (max Schmidt rank on N=13 is ≤ 64).
+        let chi_per_edge: Vec<usize> =
+            (0..n_edges).map(|i| 64 + (i % 4) * 16).collect();
+        let non_tree_chi = 128;
+
+        let params = KimParams::self_dual();
+        let n_steps = 3;
+        let history = run_kim_heavy_hex_per_edge(
+            &mut ttn,
+            &non_tree_edges,
+            params,
+            &chi_per_edge,
+            non_tree_chi,
+            n_steps,
+        )
+        .unwrap();
+
+        // Drive dense reference with the same layer order.
+        let zz = zz_gate(params.j * params.dt);
+        let rx = rx_gate(2.0 * params.h_x * params.dt);
+        for step in 1..=n_steps {
+            for e in &coupling {
+                dense.apply_two_qubit(e.a, e.b, zz);
+            }
+            for q in 0..13 {
+                dense.apply_single(q, rx);
+            }
+            for q in 0..13 {
+                let z_ttn = history[step][q];
+                let z_dense = dense.expectation_z(q);
+                assert!(
+                    (z_ttn - z_dense).abs() < 1e-11,
+                    "step {step}, q={q}: ttn={z_ttn:e}, dense={z_dense:e}"
+                );
+            }
+        }
+        // Lossless regime: norm² stays at 1.
+        let nsq = ttn.norm_squared();
+        assert!((nsq - 1.0).abs() < 1e-10, "norm² drifted: {nsq:e}");
     }
 
     /// Full depth-5 Tindall run on Eagle 127q at the exact parameters
