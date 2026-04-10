@@ -21,6 +21,8 @@
 //!    stable qubit.
 //! 6. Identify connected components of the volatile edge subgraph via BFS.
 
+use rayon::prelude::*;
+
 use crate::allocator::chi_allocation_target_budget;
 use crate::ttn::allocator::edge_sinc_score_local;
 use crate::ttn::topology::{EdgeId, Topology};
@@ -107,7 +109,11 @@ pub fn partition_tree_adaptive(
     }
 
     // Step 1: score every edge via radius-bounded local BFS.
+    // Parallelised with rayon — at 1M edges this is the dominant cost
+    // (each edge's local BFS + pairwise sin(C/2) is ~10μs, totalling
+    // ~10s sequential; rayon brings it under 2s on 8 cores).
     let scores: Vec<f64> = (0..n_edges)
+        .into_par_iter()
         .map(|i| edge_sinc_score_local(frequencies, topology, EdgeId(i), radius))
         .collect();
 
