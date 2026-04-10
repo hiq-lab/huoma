@@ -1,0 +1,41 @@
+# Tindall et al., PRX Quantum 5, 010308 (2024)
+# Source: https://github.com/JoeyT1994/BP-TNS-Data
+#   File: IBMHeavyHexData/DynamicsThetah0.8BPTNSChiInfty.npz
+#
+# Per-step ⟨Z_62⟩ on the IBM Eagle 127q heavy-hex lattice, computed
+# via belief-propagation-contracted tensor network state (BP-TNS) at
+# converged bond dimension ("χ = ∞"), θ_h = 0.8 (X-kick angle per
+# Trotter step), θ_J = π/4 (ZZ coupling angle per edge per step).
+#
+# Hamiltonian convention:
+#   U(θ_h) = (∏_{edges} exp(+i π/4 Z_v Z_{v'})) · (∏_v exp(-i θ_h/2 X_v))
+#
+# Initial state: |↑↑…↑⟩ = |0…0⟩ in the computational basis.
+#
+# Huoma KimParams mapping (matching zz_gate(θ) = exp(-iθ Z⊗Z)):
+#   j  = -π/4  (negative to match exp(+iπ/4 ZZ))
+#   h_x = 0.4  (so 2·h_x·dt = 0.8 = θ_h)
+#   h_z = 0.0
+#   dt  = 1.0
+step,z62
+0,9.999999999999998e-01
+1,6.967067093471647e-01
+2,4.854002388493554e-01
+3,5.122097753187653e-01
+4,4.657252005167790e-01
+5,4.981648550454094e-01
+6,4.648695052671365e-01
+7,4.438524904784291e-01
+8,4.419750688893821e-01
+9,4.516678930104544e-01
+10,3.850014061564634e-01
+11,3.049549875447382e-01
+12,3.565633971236240e-01
+13,3.248434465419381e-01
+14,3.082828475541416e-01
+15,3.107859568285517e-01
+16,2.836106935951913e-01
+17,2.721113672830491e-01
+18,2.533671174171083e-01
+19,2.454896255064730e-01
+20,2.295752395562329e-01
