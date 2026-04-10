@@ -61,6 +61,10 @@ use crate::ttn::topology::{EdgeId, Topology};
 /// score is the sum of `|sin(C(ω_i, ω_j) / 2)|` over all cross-cut pairs
 /// `(i, j)` with `i ∈ A`, `j ∈ B`.
 ///
+/// **Requires** a topology built with [`Topology::from_edges`] (which
+/// pre-computes cut partitions). For million-qubit lightweight topologies
+/// use [`edge_sinc_score_local`] instead.
+///
 /// Exposed as a free function so tests (and future allocators) can reuse
 /// it without going through the full [`chi_allocation_sinc_tree`] path.
 #[must_use]
@@ -69,9 +73,6 @@ pub fn edge_sinc_score(frequencies: &[f64], topology: &Topology, edge: EdgeId) -
     let mut acc = 0.0_f64;
     for &i in a_side {
         for &j in b_side {
-            // Guard against out-of-range indices so the allocator still
-            // produces a finite score if the caller passes a shorter
-            // `frequencies` slice than the topology expects.
             let (Some(&omega_i), Some(&omega_j)) = (frequencies.get(i), frequencies.get(j)) else {
                 continue;
             };
@@ -79,6 +80,82 @@ pub fn edge_sinc_score(frequencies: &[f64], topology: &Topology, edge: EdgeId) -
         }
     }
     acc
+}
+
+/// Radius-bounded local variant of [`edge_sinc_score`] — Track F milestone
+/// F.0.
+///
+/// Instead of summing over the full cut partition (O(N) per side), this
+/// walks at most `radius` hops on each side of the edge via BFS and sums
+/// the pairwise sin(C/2) over the **local** cross-cut pairs within that
+/// radius. The cost is O(radius²) per edge rather than O(N²), making it
+/// feasible on million-qubit lightweight topologies that skip the
+/// cut-partition precomputation.
+///
+/// On small topologies with `radius ≥ diameter / 2` this produces the same
+/// score as [`edge_sinc_score`] (the BFS reaches every vertex on both
+/// sides). The 1D sparse `ChannelMap` uses a similar radius concept.
+///
+/// Works on **any** `Topology`, including lightweight ones built with
+/// [`Topology::from_edges_lightweight`].
+#[must_use]
+pub fn edge_sinc_score_local(
+    frequencies: &[f64],
+    topology: &Topology,
+    edge: EdgeId,
+    radius: usize,
+) -> f64 {
+    let e = topology.edge(edge);
+    // BFS from e.a, excluding the edge itself, up to `radius` hops → A-side local set.
+    let a_local = bfs_local(topology, e.a, edge, radius);
+    // BFS from e.b, excluding the edge itself, up to `radius` hops → B-side local set.
+    let b_local = bfs_local(topology, e.b, edge, radius);
+
+    let mut acc = 0.0_f64;
+    for &i in &a_local {
+        for &j in &b_local {
+            let (Some(&omega_i), Some(&omega_j)) = (frequencies.get(i), frequencies.get(j)) else {
+                continue;
+            };
+            acc += sin_c_half(omega_i, omega_j);
+        }
+    }
+    acc
+}
+
+/// BFS from `start` up to `max_hops` tree edges, excluding `excluded_edge`.
+/// Returns the set of visited vertices (including `start`).
+fn bfs_local(
+    topology: &Topology,
+    start: usize,
+    excluded_edge: EdgeId,
+    max_hops: usize,
+) -> Vec<usize> {
+    let mut visited = vec![false; topology.n_qubits()];
+    visited[start] = true;
+    let mut result = vec![start];
+    let mut frontier = vec![start];
+    for _hop in 0..max_hops {
+        let mut next_frontier = Vec::new();
+        for &v in &frontier {
+            for &eid in topology.neighbours(v) {
+                if eid == excluded_edge {
+                    continue;
+                }
+                let w = topology.edge(eid).other(v);
+                if !visited[w] {
+                    visited[w] = true;
+                    result.push(w);
+                    next_frontier.push(w);
+                }
+            }
+        }
+        if next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+    result
 }
 
 /// Production sin(C/2) χ allocator for tree topologies — Track D D.4.
