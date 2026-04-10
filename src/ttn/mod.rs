@@ -25,6 +25,7 @@ pub mod gauge;
 pub mod heavy_hex;
 pub mod kim_heavy_hex;
 pub mod partition;
+pub mod projected;
 pub mod site;
 pub mod subtree;
 pub mod topology;
