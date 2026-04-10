@@ -67,7 +67,7 @@ impl Topology {
         let edges: Vec<Edge> = (0..n_qubits.saturating_sub(1))
             .map(|i| Edge { a: i, b: i + 1 })
             .collect();
-        Self::build(n_qubits, edges).expect("linear chain is always a valid tree")
+        Self::build(n_qubits, edges, true).expect("linear chain is always a valid tree")
     }
 
     /// General-tree constructor — milestone D.2.
@@ -76,14 +76,46 @@ impl Topology {
     /// any are violated; the panic path is the contract because a malformed
     /// topology is a programmer error, not a runtime condition. If you need
     /// to recover from invalid input, validate upstream.
+    ///
+    /// Pre-computes [`Self::cut_partition`] for every edge, which costs
+    /// O(N²) memory and O(N · |E|) time. For small topologies (N ≤ ~10K)
+    /// this is fine; for million-qubit graphs use
+    /// [`Self::from_edges_lightweight`] instead.
     #[must_use]
     pub fn from_edges(n_qubits: usize, edges: Vec<Edge>) -> Self {
-        Self::build(n_qubits, edges).unwrap_or_else(|e| panic!("{e}"))
+        Self::build(n_qubits, edges, true).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Lightweight tree constructor — Track F milestone F.0.
+    ///
+    /// Validates the same tree invariants as [`Self::from_edges`] but
+    /// **skips** the O(N²) cut-partition precomputation. Calling
+    /// [`Self::cut_partition`] on a lightweight topology will panic;
+    /// use [`Self::has_cut_partitions`] to check first.
+    ///
+    /// All other methods (`neighbours`, `degree`, `path`, `n_qubits`,
+    /// `n_edges`, `edges`, `is_linear_chain`) work identically.
+    ///
+    /// Use this for million-qubit spanning trees where the per-edge
+    /// scoring is done via radius-bounded local BFS (see
+    /// [`crate::ttn::allocator::edge_sinc_score_local`]) rather than
+    /// the full cross-cut sum.
+    #[must_use]
+    pub fn from_edges_lightweight(n_qubits: usize, edges: Vec<Edge>) -> Self {
+        Self::build(n_qubits, edges, false).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Whether this topology has pre-computed cut partitions.
+    #[must_use]
+    pub fn has_cut_partitions(&self) -> bool {
+        !self.cut_partitions.is_empty()
     }
 
     /// Shared construction path. Separated from `from_edges` so the
     /// linear-chain constructor can assume success without the panic shim.
-    fn build(n_qubits: usize, edges: Vec<Edge>) -> Result<Self, String> {
+    /// When `compute_cuts` is false the O(N²) cut-partition computation
+    /// is skipped (Track F lightweight mode).
+    fn build(n_qubits: usize, edges: Vec<Edge>, compute_cuts: bool) -> Result<Self, String> {
         if n_qubits == 0 {
             return Err("Topology requires n_qubits ≥ 1".to_string());
         }
@@ -158,30 +190,37 @@ impl Topology {
         // two subtrees (A_e, B_e). Compute each via BFS on the graph with
         // edge e removed, starting from e.a. Everything BFS reaches is A;
         // everything else is B.
-        let mut cut_partitions = Vec::with_capacity(edges.len());
-        for (e_idx, e) in edges.iter().enumerate() {
-            let mut in_a = vec![false; n_qubits];
-            in_a[e.a] = true;
-            let mut queue = std::collections::VecDeque::new();
-            queue.push_back(e.a);
-            while let Some(v) = queue.pop_front() {
-                for &eid in &neighbours[v] {
-                    if eid.0 == e_idx {
-                        continue; // pretend this edge is removed
-                    }
-                    let w = edges[eid.0].other(v);
-                    if !in_a[w] {
-                        in_a[w] = true;
-                        queue.push_back(w);
+        //
+        // Skipped in lightweight mode (Track F) — O(N²) memory at large N.
+        let cut_partitions = if compute_cuts {
+            let mut parts = Vec::with_capacity(edges.len());
+            for (e_idx, e) in edges.iter().enumerate() {
+                let mut in_a = vec![false; n_qubits];
+                in_a[e.a] = true;
+                let mut queue = std::collections::VecDeque::new();
+                queue.push_back(e.a);
+                while let Some(v) = queue.pop_front() {
+                    for &eid in &neighbours[v] {
+                        if eid.0 == e_idx {
+                            continue; // pretend this edge is removed
+                        }
+                        let w = edges[eid.0].other(v);
+                        if !in_a[w] {
+                            in_a[w] = true;
+                            queue.push_back(w);
+                        }
                     }
                 }
+                let mut a_side: Vec<usize> = (0..n_qubits).filter(|&v| in_a[v]).collect();
+                let mut b_side: Vec<usize> = (0..n_qubits).filter(|&v| !in_a[v]).collect();
+                a_side.sort_unstable();
+                b_side.sort_unstable();
+                parts.push((a_side, b_side));
             }
-            let mut a_side: Vec<usize> = (0..n_qubits).filter(|&v| in_a[v]).collect();
-            let mut b_side: Vec<usize> = (0..n_qubits).filter(|&v| !in_a[v]).collect();
-            a_side.sort_unstable();
-            b_side.sort_unstable();
-            cut_partitions.push((a_side, b_side));
-        }
+            parts
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             n_qubits,
@@ -225,8 +264,20 @@ impl Topology {
 
     /// The two sorted vertex sets induced by removing edge `id`. The side
     /// containing `edge(id).a` is returned first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the topology was built with [`Self::from_edges_lightweight`]
+    /// (which skips the O(N²) cut-partition precomputation). Check
+    /// [`Self::has_cut_partitions`] first if unsure.
     #[must_use]
     pub fn cut_partition(&self, id: EdgeId) -> (&[usize], &[usize]) {
+        assert!(
+            !self.cut_partitions.is_empty(),
+            "cut_partition called on a lightweight topology (built with \
+             from_edges_lightweight). Use from_edges for small topologies \
+             or edge_sinc_score_local for radius-bounded scoring."
+        );
         let (a, b) = &self.cut_partitions[id.0];
         (a, b)
     }

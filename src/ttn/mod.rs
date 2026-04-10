@@ -23,6 +23,7 @@ pub mod contraction;
 pub mod gauge;
 pub mod heavy_hex;
 pub mod kim_heavy_hex;
+pub mod partition;
 pub mod site;
 pub mod topology;
 
