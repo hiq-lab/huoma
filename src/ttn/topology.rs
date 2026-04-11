@@ -140,15 +140,17 @@ impl Topology {
                 return Err(format!("edge {i} is a self-loop on vertex {}", e.a));
             }
         }
-        // Duplicate check (unordered).
-        for i in 0..edges.len() {
-            for j in (i + 1)..edges.len() {
-                let (p, q) = (edges[i], edges[j]);
-                let same = (p.a == q.a && p.b == q.b) || (p.a == q.b && p.b == q.a);
-                if same {
+        // Duplicate check (unordered). Uses a hash set for O(N) instead
+        // of the previous O(N²) nested loop, which was the bottleneck at
+        // 1M qubits (233s → should be <1s after this fix).
+        {
+            let mut seen = std::collections::HashSet::with_capacity(edges.len());
+            for (i, e) in edges.iter().enumerate() {
+                let canonical = if e.a <= e.b { (e.a, e.b) } else { (e.b, e.a) };
+                if !seen.insert(canonical) {
                     return Err(format!(
-                        "duplicate edge: indices {i} and {j} both connect ({}, {})",
-                        p.a, p.b
+                        "duplicate edge at index {i}: ({}, {})",
+                        e.a, e.b
                     ));
                 }
             }
