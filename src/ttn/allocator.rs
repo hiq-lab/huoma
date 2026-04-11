@@ -125,14 +125,19 @@ pub fn edge_sinc_score_local(
 
 /// BFS from `start` up to `max_hops` tree edges, excluding `excluded_edge`.
 /// Returns the set of visited vertices (including `start`).
+///
+/// Uses a `HashSet` for the visited set instead of `vec![false; N]` so
+/// that memory is O(radius^depth) per call, not O(N). At N = 1B with
+/// rayon parallelism (8 threads) the old approach allocated 8 GB per
+/// scoring round; the HashSet approach allocates ~8 KB.
 fn bfs_local(
     topology: &Topology,
     start: usize,
     excluded_edge: EdgeId,
     max_hops: usize,
 ) -> Vec<usize> {
-    let mut visited = vec![false; topology.n_qubits()];
-    visited[start] = true;
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start);
     let mut result = vec![start];
     let mut frontier = vec![start];
     for _hop in 0..max_hops {
@@ -143,8 +148,7 @@ fn bfs_local(
                     continue;
                 }
                 let w = topology.edge(eid).other(v);
-                if !visited[w] {
-                    visited[w] = true;
+                if visited.insert(w) {
                     result.push(w);
                     next_frontier.push(w);
                 }

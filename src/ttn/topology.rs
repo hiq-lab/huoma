@@ -140,10 +140,15 @@ impl Topology {
                 return Err(format!("edge {i} is a self-loop on vertex {}", e.a));
             }
         }
-        // Duplicate check (unordered). Uses a hash set for O(N) instead
-        // of the previous O(N²) nested loop, which was the bottleneck at
-        // 1M qubits (233s → should be <1s after this fix).
-        {
+        // Duplicate check. A connected graph with exactly N-1 edges and
+        // no self-loops is a tree — it cannot have duplicate edges
+        // (a duplicate would reduce the number of *distinct* edges below
+        // N-1, which would make the graph disconnected, caught by the
+        // BFS check below). So we skip the explicit O(N)-memory dedup
+        // in lightweight mode (where N can be 1B+) and only run it for
+        // small topologies where the cost is negligible. The BFS
+        // connectivity check is the authoritative tree validation.
+        if compute_cuts {
             let mut seen = std::collections::HashSet::with_capacity(edges.len());
             for (i, e) in edges.iter().enumerate() {
                 let canonical = if e.a <= e.b { (e.a, e.b) } else { (e.b, e.a) };

@@ -12,6 +12,8 @@
 //! accepts the island's `Topology` directly, so building a TTN for each
 //! island is a single `Ttn::new(island.topology.clone())` call.
 
+use std::collections::HashMap;
+
 use crate::ttn::partition::{EdgeClass, TreePartition};
 use crate::ttn::topology::{Edge, EdgeId, Topology};
 
@@ -34,9 +36,11 @@ pub struct VolatileIsland {
     /// partitions) because islands are small enough for the O(N²) cost.
     pub topology: Topology,
 
-    /// Map from full-graph qubit index to island-local index. Length =
-    /// full `n_qubits`. `None` for qubits not in this island.
-    pub global_to_local: Vec<Option<usize>>,
+    /// Map from full-graph qubit index to island-local index. Only
+    /// contains entries for qubits in this island — O(n_island) memory
+    /// instead of O(n_full), which is the key enabler for billion-qubit
+    /// scale (at N = 1B with K = 50 islands this saves ~800 GB).
+    pub global_to_local: HashMap<usize, usize>,
 
     /// Map from island-local index to full-graph qubit index. Length =
     /// number of qubits in this island.
@@ -124,12 +128,14 @@ pub fn extract_volatile_islands(
         component_qubits.sort_unstable();
         component_full_edges.sort_unstable_by_key(|e| e.0);
 
-        // Step 4: build local index map.
+        // Step 4: build local index map (sparse HashMap — O(n_island)
+        // memory instead of O(n_full), the key enabler for billion-qubit
+        // scale).
         let n_island = component_qubits.len();
-        let mut global_to_local = vec![None; n_full];
+        let mut global_to_local = HashMap::with_capacity(n_island);
         let mut local_to_global = Vec::with_capacity(n_island);
         for (local, &global) in component_qubits.iter().enumerate() {
-            global_to_local[global] = Some(local);
+            global_to_local.insert(global, local);
             local_to_global.push(global);
         }
 
@@ -138,8 +144,8 @@ pub fn extract_volatile_islands(
             .iter()
             .map(|&eid| {
                 let e = full_topology.edge(eid);
-                let la = global_to_local[e.a].expect("volatile edge endpoint must be in island");
-                let lb = global_to_local[e.b].expect("volatile edge endpoint must be in island");
+                let la = *global_to_local.get(&e.a).expect("volatile edge endpoint must be in island");
+                let lb = *global_to_local.get(&e.b).expect("volatile edge endpoint must be in island");
                 Edge { a: la, b: lb }
             })
             .collect();
@@ -245,7 +251,7 @@ mod tests {
         for island in &islands {
             for (local, &global) in island.local_to_global.iter().enumerate() {
                 assert_eq!(
-                    island.global_to_local[global],
+                    island.global_to_local.get(&global).copied(),
                     Some(local),
                     "round-trip failed for global={global}, local={local}"
                 );

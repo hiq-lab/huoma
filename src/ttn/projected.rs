@@ -128,9 +128,9 @@ impl ProjectedTtn {
         for &[ga, gb] in non_tree_edges_global {
             // Find the island containing both endpoints.
             for (idx, is) in island_states.iter().enumerate() {
-                if let (Some(la), Some(lb)) = (
-                    is.island.global_to_local.get(ga).and_then(|x| *x),
-                    is.island.global_to_local.get(gb).and_then(|x| *x),
+                if let (Some(&la), Some(&lb)) = (
+                    is.island.global_to_local.get(&ga),
+                    is.island.global_to_local.get(&gb),
                 ) {
                     island_non_tree[idx].push(Edge { a: la, b: lb });
                     break;
