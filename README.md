@@ -192,10 +192,12 @@ project and graduated to its own repository in April 2026.
 
 ## Name
 
-Huoma (火马) — "fire horse." Old Chinese name for the comet that the West
-calls Halley's Comet. Fast, periodic, returns from far away with a
-predictable signature. Fits a Floquet simulator that exploits commensurate
-return times.
+Huoma (火马) — "fire horse." 2026 is the Year of the Fire Horse in the
+Chinese sexagenary cycle, occurring once every 60 years. The fire horse is
+fast, intense, and unpredictable in the same way that Floquet dynamics are:
+periodic driving that produces chaos at incommensurate frequencies and
+stability at commensurate ones. A simulator that distinguishes the two
+earns the name.
 
 ## License
 
