@@ -1,0 +1,3 @@
+# Aer ground-truth probability distributions are large (up to 2 GB at N=28).
+# Re-generate with: python experiments/generate_aer_ground_truth.py
+aer_probs_*.npy

@@ -54,9 +54,9 @@ mod tests {
         );
         println!("  {}", "-".repeat(75));
 
-        for &n in &[14, 18] {
+        for &n in &[14, 18, 24, 28] {
             // Load Aer ground truth
-            let aer_path = format!("../../experiments/aer_probs_{}q.npy", n);
+            let aer_path = format!("experiments/aer_probs_{}q.npy", n);
             let aer_probs = load_npy_f64(&aer_path);
 
             if aer_probs.is_empty() {
@@ -65,7 +65,7 @@ mod tests {
             }
 
             // Load angles
-            let angles_path = format!("../../experiments/angles_{}q.npy", n);
+            let angles_path = format!("experiments/angles_{}q.npy", n);
             let angles = load_npy_f64(&angles_path);
             if angles.is_empty() {
                 println!("  {:>4} | (no angles file: {})", n, angles_path);
