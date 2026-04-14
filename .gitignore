@@ -10,3 +10,9 @@ Cargo.lock.bak
 
 # macOS
 .DS_Store
+
+# Claude Code worktrees
+.claude/
+
+# Internal data (not part of the public release)
+data/

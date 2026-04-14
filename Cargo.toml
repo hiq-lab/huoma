@@ -1,12 +1,12 @@
 [package]
 name = "huoma"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
-license = "MIT OR Apache-2.0"
+license = "LGPL-3.0-or-later"
 repository = "https://github.com/hiq-lab/huoma"
-description = "Commensurability-guided MPS quantum simulator with Jacobian-driven adaptive bond truncation"
-keywords = ["quantum", "tensor-network", "mps", "simulation", "floquet"]
+description = "Commensurability-guided tree-tensor-network quantum simulator"
+keywords = ["quantum", "tensor-network", "mps", "ttn", "simulation"]
 categories = ["science", "simulation"]
 readme = "README.md"
 
