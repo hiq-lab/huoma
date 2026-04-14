@@ -13,16 +13,19 @@ circuits where most of the graph is commensurate.
 
 ## Status
 
+- **Exact match against Qiskit Aer** at χ = 8: F = 1.000000, TVD = 0.000
+  on VQE-like circuits up to N = 28 (268M amplitudes). Regenerate with
+  `python experiments/generate_aer_ground_truth.py`.
 - **IBM Eagle 127q heavy-hex** running end-to-end: 20 Floquet steps in
   760 ms at χ = 8, depth-1 ⟨Z₆₂⟩ matches Tindall et al. (PRX Quantum 5,
   010308, 2024) to floating-point precision. See
   [PHASE8_REPORT.md](PHASE8_REPORT.md).
 - **1D MPS** validated at FP precision against independent dense statevector
-  at N = 12 (2.6e-15) and N = 24 (7.4e-16), 6.8× faster than dense at
+  at N = 12 (2.6e-15) and N = 24 (7.4e-16), 6.7× faster than dense at
   N = 24. See [PHASE6_REPORT.md](PHASE6_REPORT.md).
 - **1M-qubit projected TTN** via commensurability partitioning, 3 Floquet
-  steps in 5.2 s. See `tests/projected_ttn_scale.rs`.
-- **177 tests, all green.** Standalone Rust crate, no workspace
+  steps in 5.8 s. See `tests/projected_ttn_scale.rs`.
+- **178 tests, all green.** Standalone Rust crate, no workspace
   dependencies. Builds with stable Rust ≥ 1.75.
 
 ## What Huoma is
@@ -145,15 +148,20 @@ examples/
 
 tests/golden/
 └── ibm_eagle_127.json              # byte-stable spanning-tree golden file
+
+experiments/
+├── generate_aer_ground_truth.py    # Qiskit Aer statevector reference generator
+└── angles_*.npy                    # deterministic circuit angles (committed)
 ```
 
 ## Validation evidence
 
 | Test | What it checks | Result |
 |---|---|---|
+| `accuracy::accuracy_vs_aer` | N=14/18/24/28 vs Qiskit Aer statevector | F = 1.000000, TVD = 0.000 at χ = 8 |
 | `kim_validation::stage_a` | N=12 χ=64 vs dense statevector | 2.6e-15 max ⟨Z⟩ error |
 | `kim_validation::stage_b` | N=12 χ-sweep, fidelity vs budget | documented |
-| `kim_validation::stage_d` | N=24 χ=256 vs 16M-amp dense statevector | 7.4e-16 max ⟨Z⟩ error, 6.8× speedup |
+| `kim_validation::stage_d` | N=24 χ=256 vs 16M-amp dense statevector | 7.4e-16 max ⟨Z⟩ error, 6.7× speedup |
 | `kim_validation::stage_f` | N=14/50 disordered KIM: uniform vs sin(C/2) | sin(C/2) ties uniform within 5–30 % at 0.01 ms build cost |
 | `ttn_tindall_127::depth_1` | N=127 Eagle ⟨Z₆₂⟩ at depth 1 | exact match to Tindall BP reference |
 | `ttn_tindall_127::depth_5_20` | N=127 Eagle ⟨Z₆₂⟩ trajectory | χ=8 overestimates (expected), correct trend |
