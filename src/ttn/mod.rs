@@ -21,6 +21,7 @@
 pub mod allocator;
 pub mod boundary;
 pub mod contraction;
+pub mod feedback;
 pub mod gauge;
 pub mod heavy_hex;
 pub mod kim_heavy_hex;

@@ -32,8 +32,9 @@ use crate::kicked_ising::KimParams;
 use crate::ttn::boundary::{
     compute_all_boundary_tensors, BoundaryMode, BoundaryTensor,
 };
+use crate::ttn::feedback::{self, IslandFeedback, SolveFeedback};
 use crate::ttn::kim_heavy_hex::apply_kim_step_heavy_hex_per_edge;
-use crate::ttn::partition::{EdgeClass, TreePartition};
+use crate::ttn::partition::TreePartition;
 use crate::ttn::subtree::{extract_volatile_islands, VolatileIsland};
 use crate::ttn::topology::{Edge, Topology};
 use crate::ttn::Ttn;
@@ -238,6 +239,65 @@ impl ProjectedTtn {
             .map(|is| is.ttn.total_discarded_weight())
             .sum()
     }
+
+    /// Collect per-island solve statistics for Arn's feedback loop.
+    ///
+    /// Call this after one or more `apply_floquet_step` calls. The
+    /// `solve_ms` field is left as `None` — the caller should fill it
+    /// from their own timing if they want wall-time feedback.
+    #[must_use]
+    pub fn collect_feedback(&self, frequencies: &[f64]) -> SolveFeedback {
+        let n_vol: usize = self.islands.iter().map(|is| is.ttn.n_qubits()).sum();
+        let islands: Vec<IslandFeedback> = self.islands.iter().map(|is| {
+            let n_q = is.ttn.n_qubits();
+            let n_e = is.island.topology.n_edges();
+            let max_deg = (0..n_q)
+                .map(|v| is.island.topology.degree(v))
+                .max()
+                .unwrap_or(0);
+            let chi = is.island.chi_per_edge.clone();
+            let total_chi: usize = chi.iter().sum();
+            let dw = is.ttn.total_discarded_weight();
+            let freqs: Vec<f64> = is.island.local_to_global.iter()
+                .map(|&g| frequencies.get(g).copied().unwrap_or(0.0))
+                .collect();
+            IslandFeedback {
+                n_qubits: n_q,
+                n_edges: n_e,
+                max_degree: max_deg,
+                chi_per_edge: chi,
+                total_chi,
+                discarded_weight: dw,
+                n_boundary_edges: is.island.boundary_edges.len(),
+                frequencies: freqs,
+            }
+        }).collect();
+
+        let total_dw: f64 = islands.iter().map(|i| i.discarded_weight).sum();
+
+        SolveFeedback {
+            n_qubits_total: self.n_qubits_total,
+            n_islands: self.islands.len(),
+            n_qubits_volatile: n_vol,
+            volatile_fraction: if self.n_qubits_total > 0 {
+                n_vol as f64 / self.n_qubits_total as f64
+            } else {
+                0.0
+            },
+            islands,
+            total_discarded_weight: total_dw,
+            solve_ms: None,
+        }
+    }
+
+    /// Collect feedback and POST it to Arn's `/feedback` endpoint.
+    ///
+    /// Best-effort: if Arn is unreachable, the call is silently dropped.
+    /// The simulation result is never affected by feedback delivery.
+    pub fn post_feedback(&self, frequencies: &[f64], arn_url: &str) {
+        let fb = self.collect_feedback(frequencies);
+        feedback::post_feedback(arn_url, &fb);
+    }
 }
 
 #[cfg(test)]
@@ -393,5 +453,50 @@ mod tests {
         for &zq in &z {
             assert!(zq.is_finite() && (-1.0..=1.0).contains(&zq));
         }
+    }
+
+    #[test]
+    fn collect_feedback_has_correct_shape() {
+        let topology = Topology::linear_chain(20);
+        let frequencies: Vec<f64> = (0..20)
+            .map(|i| if i % 3 == 0 { (i as f64 + 2.0).sqrt() } else { 1.0 })
+            .collect();
+        let partition = partition_tree_adaptive(&frequencies, &topology, 100, 2, 16, 5);
+        let params = KimParams::self_dual();
+        let mut pttn = ProjectedTtn::new(
+            &topology, &frequencies, partition, &[], params, 0, BoundaryMode::ProductState,
+        );
+
+        // Run a step so there's discarded weight to report.
+        pttn.apply_floquet_step(params).unwrap();
+
+        let fb = pttn.collect_feedback(&frequencies);
+
+        assert_eq!(fb.n_qubits_total, 20);
+        assert_eq!(fb.n_islands, pttn.n_islands());
+        assert_eq!(fb.n_qubits_volatile, pttn.n_qubits_volatile());
+        assert!(fb.volatile_fraction >= 0.0 && fb.volatile_fraction <= 1.0);
+        assert!(fb.total_discarded_weight >= 0.0);
+        assert!(fb.solve_ms.is_none()); // caller fills this
+
+        // Per-island checks.
+        for island_fb in &fb.islands {
+            assert!(island_fb.n_qubits > 0);
+            assert_eq!(island_fb.n_edges, island_fb.n_qubits - 1); // tree
+            assert_eq!(island_fb.chi_per_edge.len(), island_fb.n_edges);
+            assert_eq!(island_fb.total_chi, island_fb.chi_per_edge.iter().sum::<usize>());
+            assert_eq!(island_fb.frequencies.len(), island_fb.n_qubits);
+            assert!(island_fb.discarded_weight >= 0.0);
+        }
+
+        // Serializes to valid JSON.
+        let json = serde_json::to_string(&fb).unwrap();
+        assert!(json.contains("\"n_qubits_total\":20"));
+        assert!(json.contains("\"volatile_fraction\":"));
+
+        eprintln!(
+            "[feedback] {} islands, {} volatile qubits, dw={:.4e}, json={} bytes",
+            fb.n_islands, fb.n_qubits_volatile, fb.total_discarded_weight, json.len()
+        );
     }
 }
