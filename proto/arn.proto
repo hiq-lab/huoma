@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package arn;
+
+// Arn — Problem classification via binary relation analysis.
+//
+// gRPC interface for Rust-to-Rust communication (Huoma → Arn, Garm Engine → Arn).
+// HTTP/JSON remains available for Explorer/browser access.
+
+service Arn {
+  // Classify a problem: extract graph, compute sin(C/2), partition.
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+
+  // Report solver feedback for threshold refinement.
+  // Fire-and-forget from Huoma after TTN solve.
+  rpc ReportFeedback(FeedbackRequest) returns (FeedbackResponse);
+
+  // Health check.
+  rpc CheckHealth(HealthRequest) returns (HealthResponse);
+}
+
+// --- Analyze ---
+
+message AnalyzeRequest {
+  string problem_id = 1;
+  // Raw problem data as JSON string (QUBO matrix, Hamiltonian, Ising, Hessian, etc.)
+  string data_json = 2;
+  // Format hint: "qubo_matrix", "hamiltonian", "ising", "hessian", "pce_sobol", "auto"
+  string format_hint = 3;
+  // Optional sin(C/2) threshold override.
+  double threshold = 4;
+}
+
+message AnalyzeResponse {
+  string problem_id = 1;
+  bool applicable = 2;
+  // Classification speed: "deterministic", "guided", "discovery"
+  string speed = 3;
+  uint32 llm_tokens_used = 4;
+  uint32 elapsed_ms = 5;
+  // Matched class name (if any).
+  string class_name = 6;
+  double threshold_used = 7;
+
+  // Partition result
+  repeated StableEdge stable_edges = 10;
+  repeated VolatileIsland volatile_islands = 11;
+
+  // Per-node frequencies (for Huoma's TTN construction)
+  repeated double frequencies = 12;
+
+  // Full graph (optional, for detailed inspection)
+  repeated GraphNode nodes = 20;
+  repeated GraphEdge edges = 21;
+}
+
+message StableEdge {
+  uint32 i = 1;
+  uint32 j = 2;
+}
+
+message VolatileIsland {
+  repeated uint32 node_ids = 1;
+  repeated EdgePair edges = 2;
+  double mean_sin_c_half = 3;
+  uint32 size = 4;
+}
+
+message EdgePair {
+  uint32 i = 1;
+  uint32 j = 2;
+}
+
+message GraphNode {
+  uint32 id = 1;
+  double h_i = 2;
+  double omega = 3;
+}
+
+message GraphEdge {
+  uint32 i = 1;
+  uint32 j = 2;
+  double j_ij = 3;
+  double sin_c_half = 4;
+  // "stable", "volatile", "degenerate"
+  string classification = 5;
+}
+
+// --- Feedback ---
+
+message FeedbackRequest {
+  // Match to an analysis by problem_id or analysis_id.
+  string problem_id = 1;
+  string analysis_id = 2;
+
+  // Solver outcome.
+  string status = 3; // "success", "timeout", "infeasible", "error"
+  double energy = 4;
+  double solve_ms = 5;
+
+  // Huoma TTN-specific: per-island stats.
+  uint32 n_qubits_total = 10;
+  uint32 n_islands = 11;
+  uint32 n_qubits_volatile = 12;
+  double volatile_fraction = 13;
+  double total_discarded_weight = 14;
+  repeated IslandStats islands = 15;
+}
+
+message IslandStats {
+  uint32 n_qubits = 1;
+  uint32 n_edges = 2;
+  uint32 max_degree = 3;
+  repeated uint32 chi_per_edge = 4;
+  uint32 total_chi = 5;
+  double discarded_weight = 6;
+  uint32 n_boundary_edges = 7;
+  repeated double frequencies = 8;
+}
+
+message FeedbackResponse {
+  string status = 1; // "recorded", "no_matching_analysis"
+  // New threshold after refinement (if any).
+  double new_threshold = 2;
+}
+
+// --- Health ---
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  uint64 total_classes = 3;
+  uint64 total_analyses = 4;
+}

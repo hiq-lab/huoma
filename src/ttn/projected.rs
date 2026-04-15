@@ -287,6 +287,7 @@ impl ProjectedTtn {
             islands,
             total_discarded_weight: total_dw,
             solve_ms: None,
+            problem_id: None,
         }
     }
 
