@@ -169,27 +169,6 @@ experiments/
 | `projected_ttn_scale::million` | 1M qubits, 3 Floquet steps | 5.2 s, all ⟨Z⟩ finite and bounded |
 | `bench::bench_scaling` | 1D scaling 50 → 100,000 q | < 10 min wall |
 
-## History
-
-Huoma originated as the `arvak-proj` crate inside the Arvak compiler
-project and graduated to its own repository in April 2026.
-
-- [BIANCHI_JOURNEY.md](BIANCHI_JOURNEY.md) — Phases 1–5: the failed
-  Bianchi-projection truncation correction, what was tried, what worked,
-  and the lessons learned.
-- [PHASE6_REPORT.md](PHASE6_REPORT.md) — Phase 6: KIM validation +
-  discovery of the `apply_zz_fast` corruption bug.
-- [PHASE7_REPORT.md](PHASE7_REPORT.md) — Phase 7: matched-budget
-  water-filling allocator + boundary blind spot in the discarded-weight
-  Jacobian + sin(C/2) restored as the production allocator. Track A closed.
-- [PHASE8_REPORT.md](PHASE8_REPORT.md) — Phase 8: Track D complete.
-  TTN generalisation, IBM Eagle 127q heavy-hex, swap network, Tindall
-  benchmark, sin(C/2) allocator for trees.
-- [TRACK_D_DESIGN.md](TRACK_D_DESIGN.md) — Track D design doc (milestones
-  D.1–D.5).
-- [ROADMAP.md](ROADMAP.md) — forward-looking plan (Tracks A–E + decision
-  points).
-
 ## Name
 
 Huoma (火马) — "fire horse." 2026 is the Year of the Fire Horse in the
