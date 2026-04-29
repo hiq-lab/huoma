@@ -115,6 +115,75 @@ fn projected_ttn_1m_qubits_completes() {
     );
 }
 
+/// One billion qubits — VQ-110 scale run on Mac Studio M4 Ultra (128 GB).
+#[test]
+#[ignore = "1B-qubit scale run, requires 128 GB and ~20 min"]
+fn projected_ttn_1b_qubits_completes() {
+    let n = 1_000_000_000;
+    let volatile_fraction = 1e-7;
+
+    let start = std::time::Instant::now();
+
+    let topology = synthetic_chain(n);
+    let t_topology = start.elapsed();
+    eprintln!("[1B] topology ({n} nodes): {t_topology:.2?}");
+
+    let frequencies = mixed_frequencies(n, volatile_fraction);
+    let total_budget = (n - 1) * 4;
+    let partition = partition_tree_adaptive(&frequencies, &topology, total_budget, 2, 16, 5);
+    let t_partition = start.elapsed();
+    eprintln!(
+        "[1B] partition: {} volatile edges, {} volatile qubits ({:.6}%), {:?}",
+        partition.volatile_edges.len(),
+        partition.volatile_qubits.len(),
+        partition.volatile_qubits.len() as f64 / n as f64 * 100.0,
+        t_partition - t_topology
+    );
+
+    let params = KimParams {
+        j: -std::f64::consts::FRAC_PI_4,
+        h_x: 0.4,
+        h_z: 0.0,
+        dt: 1.0,
+    };
+    let mut pttn = ProjectedTtn::new(
+        &topology, &frequencies, partition, &[], params, 3, BoundaryMode::ProductState,
+    );
+    let t_build = start.elapsed();
+    eprintln!(
+        "[1B] build: {} islands, {} volatile qubits, {:?}",
+        pttn.n_islands(), pttn.n_qubits_volatile(), t_build - t_partition
+    );
+
+    for _ in 0..3 {
+        pttn.apply_floquet_step(params).unwrap();
+    }
+    let t_evolve = start.elapsed();
+    eprintln!("[1B] 3 Floquet steps: {:?}", t_evolve - t_build);
+
+    let z = pttn.expectation_z_all();
+    let t_obs = start.elapsed();
+    assert_eq!(z.len(), n);
+    eprintln!("[1B] expectation_z_all ({n} values): {:?}", t_obs - t_evolve);
+
+    for (q, &zq) in z.iter().enumerate() {
+        assert!(
+            zq.is_finite() && (-1.0..=1.0).contains(&zq),
+            "q={q}: ⟨Z⟩ = {zq}"
+        );
+    }
+
+    let total = start.elapsed();
+    eprintln!(
+        "\n[1B] DONE: {n} qubits, {} volatile ({:.6}%), {} islands, \
+         3 steps, total = {total:.2?}, discarded = {:.4e}",
+        pttn.n_qubits_volatile(),
+        pttn.n_qubits_volatile() as f64 / n as f64 * 100.0,
+        pttn.n_islands(),
+        pttn.total_discarded_weight(),
+    );
+}
+
 /// The million-qubit pipeline smoke test.
 ///
 /// At N = 100,000 with ~1% volatile fraction this exercises:
