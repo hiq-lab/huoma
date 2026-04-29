@@ -51,6 +51,8 @@
 //! assert_eq!(chi.iter().sum::<usize>(), 126 * 16);
 //! ```
 
+use std::collections::HashSet;
+
 use crate::allocator::chi_allocation_target_budget;
 use crate::channel::sin_c_half;
 use crate::ttn::topology::{EdgeId, Topology};
@@ -131,8 +133,12 @@ fn bfs_local(
     excluded_edge: EdgeId,
     max_hops: usize,
 ) -> Vec<usize> {
-    let mut visited = vec![false; topology.n_qubits()];
-    visited[start] = true;
+    // Visited set is bounded by O(degree^max_hops) — much smaller than
+    // topology.n_qubits() at scale. Sizing the bitmap to N would force a
+    // per-call allocation linear in the topology size and serialise rayon
+    // workers on the system allocator.
+    let mut visited: HashSet<usize> = HashSet::new();
+    visited.insert(start);
     let mut result = vec![start];
     let mut frontier = vec![start];
     for _hop in 0..max_hops {
@@ -143,8 +149,7 @@ fn bfs_local(
                     continue;
                 }
                 let w = topology.edge(eid).other(v);
-                if !visited[w] {
-                    visited[w] = true;
+                if visited.insert(w) {
                     result.push(w);
                     next_frontier.push(w);
                 }
