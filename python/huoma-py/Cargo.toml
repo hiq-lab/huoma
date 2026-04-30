@@ -1,0 +1,23 @@
+[package]
+name = "huoma-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "LGPL-3.0-or-later"
+description = "Python bindings for huoma — TTN/MPS quantum simulator with sin(C/2) commensurability partitioning"
+publish = false
+
+[lib]
+name = "huoma_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
+numpy = "0.24"
+num-complex = { version = "0.4", features = ["serde"] }
+huoma = { path = "../.." }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
