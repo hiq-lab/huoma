@@ -1,16 +1,16 @@
 //! Python bindings for huoma — TTN/MPS quantum simulator.
 //!
-//! Scope (v0.1, VQ-109 D1 scaffold):
+//! Scope (v0.2, VQ-109 D1 days 0–4):
 //! - `Mps` class: construct, apply 1- and 2-qubit gates, query expectation
 //!   values, bond dimensions, statevector.
+//! - `Mps.expectation_z_string(positions)` — multi-qubit Z-product expectation.
+//! - `Mps.expectation_pauli_string(spec)` — full Pauli-string expectation
+//!   for chemistry Hamiltonians (single-sweep evaluation, no Python-side
+//!   round-trip per Pauli).
 //! - `chi_allocation_sinc` module-level function.
 //!
-//! Intentionally NOT exposed in v0.1:
+//! Intentionally NOT exposed:
 //! - `Ttn` and tree topologies — VQE production runs use 1D MPS.
-//! - `expectation_pauli_string` — TODO, requires a `expectation_z_string`
-//!   primitive in huoma core (see lib.rs of huoma). Without it, basis-rotated
-//!   Pauli expectation requires a full Python-side O(N) gate-clone-and-revert
-//!   per Pauli, which is the round-trip cost we're trying to avoid for VQE.
 //!
 //! Design: bindings are thin. Chemistry-side logic (PySCF, OpenFermion,
 //! VQE loop, ansatz construction) lives in `services/qmmm-fep/` Python,
@@ -117,6 +117,37 @@ impl PyMps {
             )));
         }
         Ok(self.inner.expectation_z(target))
+    }
+
+    /// ⟨ψ| ∏_q Z_q |ψ⟩ over the given qubit positions.
+    ///
+    /// Duplicates cancel (Z² = I). Single-sweep evaluation, normalized by ⟨ψ|ψ⟩.
+    fn expectation_z_string(&self, positions: Vec<usize>) -> PyResult<f64> {
+        for &p in &positions {
+            if p >= self.inner.n_qubits {
+                return Err(PyValueError::new_err(format!(
+                    "position {} out of range (n_qubits = {})",
+                    p, self.inner.n_qubits
+                )));
+            }
+        }
+        Ok(self.inner.expectation_z_string(&positions))
+    }
+
+    /// ⟨ψ| P |ψ⟩ for a Pauli string `P = ⊗_q P_q`.
+    ///
+    /// `spec` is a string of length `n_qubits`. Each character is one of
+    /// `I`, `X`, `Y`, `Z` (case-insensitive). Returns a real number; Pauli
+    /// strings are Hermitian.
+    ///
+    /// Single-sweep evaluation: for each X/Y site, applies a basis rotation
+    /// to a clone, then measures the multi-Z product. Avoids Python-side
+    /// round-trips, suitable for chemistry Hamiltonians with thousands of
+    /// Pauli terms per VQE step.
+    fn expectation_pauli_string(&self, spec: &str) -> PyResult<f64> {
+        self.inner
+            .expectation_pauli_string(spec)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
     }
 
     /// ⟨ψ|ψ⟩.
