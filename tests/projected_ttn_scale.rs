@@ -34,8 +34,12 @@ fn mixed_frequencies(n: usize, volatile_fraction: f64) -> Vec<f64> {
     let primes = [2.0_f64, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0, 23.0];
     (0..n)
         .map(|i| {
-            // Deterministic hash to decide if this qubit is "disordered".
-            let hash = ((i * 2654435761) >> 16) as f64 / 65536.0;
+            // Knuth multiplicative hash truncated to 32 bits, then mapped
+            // to [0, 1). Without the truncation `(i * K) >> 16` grows
+            // without bound on usize and the comparison below silently
+            // fails for all but the first ~25k indices.
+            let h = i.wrapping_mul(2654435761) as u32;
+            let hash = (h as f64) / 4_294_967_296.0;
             if hash < volatile_fraction {
                 // Incommensurate: √prime
                 primes[i % primes.len()].sqrt()
