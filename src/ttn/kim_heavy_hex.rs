@@ -734,4 +734,114 @@ mod tests {
              final max|⟨Z⟩| = {max_abs_z:.3e}, norm² = {nsq:.15}"
         );
     }
+
+    /// Same adiabatic ramp on a 15-qubit balanced binary tree.
+    ///
+    /// The chain case delegates to the validated `Mps` backend; this one
+    /// forces `Backend::Tree` (the native flat-tensor path with branching
+    /// nodes), so it's the load-bearing topology test for the annealer
+    /// thread — million-variable adiabatic-on-tree only makes sense if
+    /// the primitive holds on non-chain trees.
+    #[test]
+    fn adiabatic_ramp_binary_tree_matches_dense_lossless() {
+        let n = 15;
+        let n_steps = 50;
+        let dt = 0.1_f64;
+
+        let h_x_0 = 1.0_f64;
+        let j_0 = 1.0_f64;
+        let h_z_0 = 0.5_f64;
+
+        // Balanced binary tree: node i has children 2i+1, 2i+2.
+        let tree_edges: Vec<Edge> = (0..n)
+            .flat_map(|i| {
+                let mut es = Vec::new();
+                if 2 * i + 1 < n {
+                    es.push(Edge { a: i, b: 2 * i + 1 });
+                }
+                if 2 * i + 2 < n {
+                    es.push(Edge { a: i, b: 2 * i + 2 });
+                }
+                es
+            })
+            .collect();
+        assert_eq!(tree_edges.len(), n - 1);
+
+        let topology = Topology::from_edges(n, tree_edges.clone());
+        assert!(
+            !topology.is_linear_chain(),
+            "test must exercise Backend::Tree, not the chain fast path"
+        );
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(n);
+
+        let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+        let h_gate: [[C; 2]; 2] = [
+            [C::new(inv_sqrt2, 0.0), C::new(inv_sqrt2, 0.0)],
+            [C::new(inv_sqrt2, 0.0), C::new(-inv_sqrt2, 0.0)],
+        ];
+        for q in 0..n {
+            ttn.apply_single(q, h_gate);
+            dense.apply_single(q, h_gate);
+        }
+
+        let no_non_tree: Vec<Edge> = vec![];
+        let mut max_err = 0.0_f64;
+
+        for k in 0..n_steps {
+            let s = (k as f64 + 0.5) / n_steps as f64;
+            let params = KimParams {
+                j: s * j_0,
+                h_x: -(1.0 - s) * h_x_0,
+                h_z: s * h_z_0,
+                dt,
+            };
+
+            apply_kim_step_heavy_hex(&mut ttn, &no_non_tree, params, usize::MAX).unwrap();
+
+            let zz = zz_gate(params.j * params.dt);
+            for e in &tree_edges {
+                dense.apply_two_qubit(e.a, e.b, zz);
+            }
+            if params.h_z != 0.0 {
+                let rz = rz_gate(2.0 * params.h_z * params.dt);
+                for q in 0..n {
+                    dense.apply_single(q, rz);
+                }
+            }
+            let rx = rx_gate(2.0 * params.h_x * params.dt);
+            for q in 0..n {
+                dense.apply_single(q, rx);
+            }
+
+            let z_ttn = ttn.expectation_z_all();
+            for q in 0..n {
+                let z_dense = dense.expectation_z(q);
+                let err = (z_ttn[q] - z_dense).abs();
+                if err > max_err {
+                    max_err = err;
+                }
+            }
+        }
+
+        assert!(
+            max_err < 1e-10,
+            "binary-tree adiabatic ramp diverged from dense: max ⟨Z⟩ err = {max_err:e}"
+        );
+
+        let z_final = ttn.expectation_z_all();
+        let max_abs_z: f64 = z_final.iter().map(|z| z.abs()).fold(0.0, f64::max);
+        assert!(
+            max_abs_z > 0.05,
+            "ramp produced trivial dynamics on tree: max|⟨Z⟩| = {max_abs_z:e}"
+        );
+
+        let nsq = ttn.norm_squared();
+        assert!((nsq - 1.0).abs() < 1e-9, "norm² drifted: {nsq:e}");
+
+        eprintln!(
+            "[adiabatic-ramp tree N={n} steps={n_steps}] max ⟨Z⟩ err = {max_err:.3e}, \
+             final max|⟨Z⟩| = {max_abs_z:.3e}, norm² = {nsq:.15}"
+        );
+    }
 }
