@@ -454,6 +454,164 @@ impl Mps {
         env_z[0].re / denom
     }
 
+    /// Sweep left-to-right SVDs that put the MPS in left-canonical
+    /// form, then absorb the global norm into the rightmost site and
+    /// normalize. After this returns, every site `q < n_qubits - 1`
+    /// satisfies `Σ_σ m_σ[q]† · m_σ[q] = I` (left-isometry), and
+    /// `‖m_σ[n_qubits - 1]‖²_F = 1`. The represented state has unit
+    /// 2-norm.
+    ///
+    /// At each bond q, the local pair is contracted to `Θ`, SVD'd
+    /// without truncation, and the result split as `U` (becomes the new
+    /// site q, left-canonical) times `S V†` (folded into site q+1).
+    /// Cost: O(N · χ³) (one SVD per bond at full rank).
+    ///
+    /// Use case: long heavily-truncated runs accumulate per-site noise
+    /// in the post-SVD `sqrt(S)`-on-each-side splitting, which
+    /// overflows the env-contraction in [`Self::expectation_z_all`] at
+    /// N ≥ 10⁶ × 50 steps. One canonicalization sweep before
+    /// measurement bounds the env values to O(1).
+    pub fn canonicalize_left_and_normalize(&mut self) -> Result<()> {
+        let n = self.n_qubits;
+        if n < 2 {
+            return Ok(());
+        }
+        for q in 0..n - 1 {
+            let ld = self.sites[q].left_dim;
+            let rd_old = self.sites[q].right_dim;
+            let rows = 2 * ld;
+            let cols = rd_old;
+
+            let mat = Mat::from_fn(rows, cols, |i, j| {
+                let a = i / 2;
+                let sigma = i % 2;
+                let elem = if sigma == 0 {
+                    self.sites[q].m0[a * cols + j]
+                } else {
+                    self.sites[q].m1[a * cols + j]
+                };
+                faer::c64::new(elem.re, elem.im)
+            });
+
+            let svd = mat
+                .thin_svd()
+                .map_err(|_| crate::error::ProjError::SvdFailed(0))?;
+            let u = svd.U();
+            let s = svd.S();
+            let v = svd.V();
+            let actual_chi = s.column_vector().nrows().min(rows).min(cols);
+
+            let mut new_m0 = vec![C::new(0.0, 0.0); ld * actual_chi];
+            let mut new_m1 = vec![C::new(0.0, 0.0); ld * actual_chi];
+            for a in 0..ld {
+                for g in 0..actual_chi {
+                    let u00 = u[(a * 2, g)];
+                    new_m0[a * actual_chi + g] = C::new(u00.re, u00.im);
+                    let u10 = u[(a * 2 + 1, g)];
+                    new_m1[a * actual_chi + g] = C::new(u10.re, u10.im);
+                }
+            }
+
+            // (S V†)[γ, β] = S[γ] · conj(V[β, γ]).
+            let mut sv_dagger = vec![C::new(0.0, 0.0); actual_chi * cols];
+            for g in 0..actual_chi {
+                let s_g = s.column_vector()[g].re;
+                for b in 0..cols {
+                    let v_bg = v[(b, g)];
+                    sv_dagger[g * cols + b] = C::new(s_g * v_bg.re, -s_g * v_bg.im);
+                }
+            }
+
+            self.sites[q] = SiteTensor {
+                m0: new_m0,
+                m1: new_m1,
+                left_dim: ld,
+                right_dim: actual_chi,
+                lambda: None,
+            };
+
+            // Fold S V† into site q+1.
+            let next_left = self.sites[q + 1].left_dim;
+            let next_right = self.sites[q + 1].right_dim;
+            debug_assert_eq!(next_left, cols);
+            let old_m0 = std::mem::take(&mut self.sites[q + 1].m0);
+            let old_m1 = std::mem::take(&mut self.sites[q + 1].m1);
+            let mut new_m0_next = vec![C::new(0.0, 0.0); actual_chi * next_right];
+            let mut new_m1_next = vec![C::new(0.0, 0.0); actual_chi * next_right];
+            for g in 0..actual_chi {
+                for b in 0..next_right {
+                    let mut acc0 = C::new(0.0, 0.0);
+                    let mut acc1 = C::new(0.0, 0.0);
+                    for gp in 0..cols {
+                        let svd_elem = sv_dagger[g * cols + gp];
+                        acc0 += svd_elem * old_m0[gp * next_right + b];
+                        acc1 += svd_elem * old_m1[gp * next_right + b];
+                    }
+                    new_m0_next[g * next_right + b] = acc0;
+                    new_m1_next[g * next_right + b] = acc1;
+                }
+            }
+            self.sites[q + 1].m0 = new_m0_next;
+            self.sites[q + 1].m1 = new_m1_next;
+            self.sites[q + 1].left_dim = actual_chi;
+        }
+
+        // All sites except the last are now left-canonical. The last
+        // site holds the global norm. Read it and divide out.
+        let last = n - 1;
+        let frob_sq: f64 = self.sites[last]
+            .m0
+            .iter()
+            .chain(self.sites[last].m1.iter())
+            .map(|c| c.norm_sqr())
+            .sum();
+        if frob_sq > 0.0 && frob_sq.is_finite() {
+            let inv = 1.0 / frob_sq.sqrt();
+            let inv_c = C::new(inv, 0.0);
+            for c in self.sites[last].m0.iter_mut() {
+                *c *= inv_c;
+            }
+            for c in self.sites[last].m1.iter_mut() {
+                *c *= inv_c;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rescale each site tensor so its Frobenius norm is 1.
+    ///
+    /// Pure global-scalar multiplication of the represented state — the
+    /// state is multiplied by a constant `k = ∏_q (1 / √F_q)` where
+    /// `F_q = ‖m_σ[q]‖²_F`. Expectation values from
+    /// [`Self::expectation_z`] are invariant because both numerator and
+    /// denominator scale by `|k|²`.
+    ///
+    /// Useful after long heavily-truncated runs where the post-SVD
+    /// `sqrt(S)` splitting accumulates magnitudes that overflow f64 in
+    /// the env-contraction. Bounding each site's Frobenius to 1 keeps
+    /// env values O(1) at every step of the contraction.
+    pub fn rescale_sites_to_unit_frobenius(&mut self) {
+        self.sites.par_iter_mut().for_each(|site| {
+            let frob_sq: f64 = site
+                .m0
+                .iter()
+                .chain(site.m1.iter())
+                .map(|c| c.norm_sqr())
+                .sum();
+            if frob_sq > 0.0 && frob_sq.is_finite() {
+                let inv = 1.0 / frob_sq.sqrt();
+                let inv_c = C::new(inv, 0.0);
+                for c in site.m0.iter_mut() {
+                    *c *= inv_c;
+                }
+                for c in site.m1.iter_mut() {
+                    *c *= inv_c;
+                }
+            }
+        });
+    }
+
     /// Compute `⟨Z_q⟩` for every qubit `q ∈ 0..n_qubits` in a single
     /// pass.
     ///
@@ -912,6 +1070,100 @@ mod tests {
         let dims = mps.bond_dims();
         // GHZ state has bond dim 2 everywhere
         assert!(dims.iter().all(|&d| d == 2), "dims = {dims:?}");
+    }
+
+    /// `canonicalize_left_and_normalize` must produce left-isometries on
+    /// every non-last site, normalize the rightmost site's Frobenius² to
+    /// 1, and leave `⟨Z⟩` invariant up to rounding.
+    #[test]
+    fn canonicalize_left_and_normalize_preserves_expectation() {
+        let n = 8;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.4), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.6));
+
+        let z_before = mps.expectation_z_all();
+        mps.canonicalize_left_and_normalize().unwrap();
+
+        // Last site now carries the (unit) norm.
+        let last = &mps.sites[n - 1];
+        let frob_sq: f64 = last
+            .m0
+            .iter()
+            .chain(last.m1.iter())
+            .map(|c| c.norm_sqr())
+            .sum();
+        assert!(
+            (frob_sq - 1.0).abs() < 1e-12,
+            "rightmost Frobenius² should be 1 after canonicalize+normalize, got {frob_sq:e}"
+        );
+
+        // Every non-last site should be left-isometric: Σ_σ A†A = I.
+        for q in 0..n - 1 {
+            let site = &mps.sites[q];
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let chi = rd; // After SVD with no truncation, right_dim = SVD rank ≤ 2*ld.
+            for gp in 0..chi {
+                for g in 0..chi {
+                    let mut acc = C::new(0.0, 0.0);
+                    for a in 0..ld {
+                        let m0 = site.m0[a * rd + g];
+                        let m1 = site.m1[a * rd + g];
+                        let m0p = site.m0[a * rd + gp].conj();
+                        let m1p = site.m1[a * rd + gp].conj();
+                        acc += m0p * m0 + m1p * m1;
+                    }
+                    let target = if g == gp { 1.0 } else { 0.0 };
+                    let err = (acc.re - target).abs() + acc.im.abs();
+                    assert!(
+                        err < 1e-10,
+                        "site {q} not left-isometric at ({gp},{g}): {acc:?}"
+                    );
+                }
+            }
+        }
+
+        let z_after = mps.expectation_z_all();
+        for q in 0..n {
+            let err = (z_before[q] - z_after[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: before={} after={} err={err:e}",
+                z_before[q],
+                z_after[q]
+            );
+        }
+    }
+
+    /// `rescale_sites_to_unit_frobenius` must leave `⟨Z⟩` invariant —
+    /// it's a pure global-scalar multiplication of the state.
+    #[test]
+    fn rescale_to_unit_frobenius_preserves_expectation() {
+        let n = 8;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.4), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.6));
+
+        let z_before = mps.expectation_z_all();
+        mps.rescale_sites_to_unit_frobenius();
+        let z_after = mps.expectation_z_all();
+
+        for q in 0..n {
+            let err = (z_before[q] - z_after[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: before={} after={} err={err:e}",
+                z_before[q],
+                z_after[q]
+            );
+        }
     }
 
     /// `expectation_z_all` must agree with a naïve loop over

@@ -54,6 +54,16 @@ fn run_adiabatic_chain(n: usize, n_steps: usize, max_bond: usize, dt: f64, tag: 
         apply_kim_step(&mut state, params, &chi_per_bond).unwrap();
     }
     let t_ramp = ramp_start.elapsed();
+
+    // Canonicalize before measurement: heavy-truncation runs at scale
+    // accumulate per-site noise that would overflow the env-contraction
+    // in `expectation_z_all`. One left-canonical SVD sweep puts all the
+    // norm on the rightmost site, where dividing it out gives a unit-norm
+    // state with bounded tensor entries.
+    let canon_start = std::time::Instant::now();
+    state.canonicalize_left_and_normalize().unwrap();
+    let t_canon = canon_start.elapsed();
+    eprintln!("[{tag}] canonicalize-and-normalize: {t_canon:.2?}");
     eprintln!(
         "[{tag}] {n_steps} ramp steps at χ={max_bond}: {t_ramp:.2?} ({:.2?}/step)",
         t_ramp / n_steps as u32
