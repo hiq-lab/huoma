@@ -119,6 +119,77 @@ fn projected_ttn_1m_qubits_completes() {
     );
 }
 
+/// Realistic-disorder sweep at N = 1M.
+///
+/// The 1B test (volatile_fraction = 1e-7) is the *clean-host* end of the
+/// physics — a few defects in an otherwise commensurate sea (NV diamond,
+/// dilute impurities). Most condensed-matter problems are nowhere near
+/// this dilute. This sweep walks the volatile fraction across five
+/// decades at fixed N to map how partition / build / Floquet-step cost
+/// scale as volatile islands proliferate.
+///
+/// Prints per-phase timings under `[VF]` so the run.log captures the
+/// scaling curve for whatever wall-clock budget we're working with.
+#[test]
+#[ignore = "disorder-fraction scaling sweep, multi-second"]
+fn projected_ttn_disorder_sweep_1m() {
+    let n = 1_000_000;
+    let topology = synthetic_chain(n);
+
+    let params = KimParams {
+        j: -std::f64::consts::FRAC_PI_4,
+        h_x: 0.4,
+        h_z: 0.0,
+        dt: 1.0,
+    };
+    let total_budget = (n - 1) * 4;
+
+    eprintln!("[VF] N = {n}, sweeping volatile_fraction over 5 decades");
+    eprintln!(
+        "[VF] {:>9} | {:>10} | {:>10} | {:>10} | {:>11} | {:>11} | {:>10} | {:>10}",
+        "vf", "vol_qubits", "islands", "partition", "build", "step (avg)", "measure", "total"
+    );
+
+    for &vf in &[1e-5_f64, 1e-4, 1e-3, 1e-2, 1e-1] {
+        let frequencies = mixed_frequencies(n, vf);
+
+        let t0 = std::time::Instant::now();
+        let partition =
+            partition_tree_adaptive(&frequencies, &topology, total_budget, 2, 16, 5);
+        let t_partition = t0.elapsed();
+
+        let mut pttn = ProjectedTtn::new(
+            &topology, &frequencies, partition, &[], params, 3, BoundaryMode::ProductState,
+        );
+        let t_build = t0.elapsed() - t_partition;
+        let n_islands = pttn.n_islands();
+        let vol_q = pttn.n_qubits_volatile();
+
+        let t_step_start = std::time::Instant::now();
+        for _ in 0..3 {
+            pttn.apply_floquet_step(params).unwrap();
+        }
+        let t_step_avg = t_step_start.elapsed() / 3;
+
+        let t_measure_start = std::time::Instant::now();
+        let z = pttn.expectation_z_all();
+        let t_measure = t_measure_start.elapsed();
+        assert_eq!(z.len(), n);
+        for (q, &zq) in z.iter().enumerate() {
+            assert!(
+                zq.is_finite() && (-1.0..=1.0).contains(&zq),
+                "vf={vf:.0e} q={q}: ⟨Z⟩ = {zq}"
+            );
+        }
+
+        let total = t0.elapsed();
+        eprintln!(
+            "[VF] {:>9.0e} | {:>10} | {:>10} | {:>10.2?} | {:>11.2?} | {:>11.2?} | {:>10.2?} | {:>10.2?}",
+            vf, vol_q, n_islands, t_partition, t_build, t_step_avg, t_measure, total
+        );
+    }
+}
+
 /// One billion qubits — VQ-110 scale run on Mac Studio M4 Ultra (128 GB).
 #[test]
 #[ignore = "1B-qubit scale run, requires 128 GB and ~20 min"]
