@@ -454,6 +454,127 @@ impl Mps {
         env_z[0].re / denom
     }
 
+    /// Compute `⟨Z_q⟩` for every qubit `q ∈ 0..n_qubits` in a single
+    /// pass.
+    ///
+    /// Pre-computes the full set of left environments and right
+    /// environments once each (O(N · χ⁴) total per environment build),
+    /// then per-site sandwiches a local Z operator against the stored
+    /// envelopes (O(χ⁴) per site, O(N · χ⁴) total). Compared to a naïve
+    /// loop over [`Self::expectation_z`] (O(N² · χ⁴)) this is N×
+    /// faster, which matters at N ≥ 10⁴.
+    ///
+    /// Works for any MPS regardless of canonical form, by the same
+    /// numerator/denominator trick as [`Self::expectation_z`]: the
+    /// denominator is `<ψ|ψ>` (a single scalar after the env build) and
+    /// is divided into the per-site numerator at the end.
+    #[must_use]
+    pub fn expectation_z_all(&self) -> Vec<f64> {
+        let n = self.n_qubits;
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // Left environments: left_envs[q] is the contracted state from
+        // sites 0..q (so left_envs[0] is the 1×1 left-vacuum boundary).
+        // Stored flat as (left_dim of site q)² entries.
+        let mut left_envs: Vec<Vec<C>> = Vec::with_capacity(n + 1);
+        left_envs.push(vec![C::new(1.0, 0.0)]);
+        for site in &self.sites {
+            let prev = left_envs.last().unwrap();
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let mut new_env = vec![C::new(0.0, 0.0); rd * rd];
+            for ap in 0..ld {
+                for a in 0..ld {
+                    let e = prev[ap * ld + a];
+                    if e.re == 0.0 && e.im == 0.0 {
+                        continue;
+                    }
+                    for bp in 0..rd {
+                        let m0_apbp = site.m0[ap * rd + bp].conj();
+                        let m1_apbp = site.m1[ap * rd + bp].conj();
+                        for b in 0..rd {
+                            let m0_ab = site.m0[a * rd + b];
+                            let m1_ab = site.m1[a * rd + b];
+                            new_env[bp * rd + b] += e * (m0_apbp * m0_ab + m1_apbp * m1_ab);
+                        }
+                    }
+                }
+            }
+            left_envs.push(new_env);
+        }
+
+        // Right environments: right_envs[q] is the contracted state
+        // from sites q..n (so right_envs[n] is the 1×1 right-vacuum
+        // boundary). Stored flat as (left_dim of site q)² entries.
+        let mut right_envs: Vec<Vec<C>> = vec![Vec::new(); n + 1];
+        right_envs[n] = vec![C::new(1.0, 0.0)];
+        for q in (0..n).rev() {
+            let site = &self.sites[q];
+            let next = &right_envs[q + 1];
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let mut new_env = vec![C::new(0.0, 0.0); ld * ld];
+            for bp in 0..rd {
+                for b in 0..rd {
+                    let r = next[bp * rd + b];
+                    if r.re == 0.0 && r.im == 0.0 {
+                        continue;
+                    }
+                    for ap in 0..ld {
+                        let m0_apbp = site.m0[ap * rd + bp].conj();
+                        let m1_apbp = site.m1[ap * rd + bp].conj();
+                        for a in 0..ld {
+                            let m0_ab = site.m0[a * rd + b];
+                            let m1_ab = site.m1[a * rd + b];
+                            new_env[ap * ld + a] += r * (m0_apbp * m0_ab + m1_apbp * m1_ab);
+                        }
+                    }
+                }
+            }
+            right_envs[q] = new_env;
+        }
+
+        let norm = left_envs[n][0].re;
+        if norm.abs() < 1e-30 {
+            return vec![0.0; n];
+        }
+
+        // Per-site Z sandwich: parallel over q since each q's contraction
+        // only reads from `self`, `left_envs`, and `right_envs`.
+        (0..n)
+            .into_par_iter()
+            .map(|q| {
+                let site = &self.sites[q];
+                let ld = site.left_dim;
+                let rd = site.right_dim;
+                let l = &left_envs[q];
+                let r = &right_envs[q + 1];
+                let mut z_acc = C::new(0.0, 0.0);
+                for ap in 0..ld {
+                    for a in 0..ld {
+                        let e = l[ap * ld + a];
+                        if e.re == 0.0 && e.im == 0.0 {
+                            continue;
+                        }
+                        for bp in 0..rd {
+                            let m0_apbp = site.m0[ap * rd + bp].conj();
+                            let m1_apbp = site.m1[ap * rd + bp].conj();
+                            for b in 0..rd {
+                                let m0_ab = site.m0[a * rd + b];
+                                let m1_ab = site.m1[a * rd + b];
+                                let weighted = m0_apbp * m0_ab - m1_apbp * m1_ab;
+                                z_acc += e * weighted * r[bp * rd + b];
+                            }
+                        }
+                    }
+                }
+                z_acc.re / norm
+            })
+            .collect()
+    }
+
     /// Contract the full MPS into a dense state vector (for validation).
     /// Only feasible for small n_qubits (≤ ~25).
     #[must_use]
@@ -791,5 +912,35 @@ mod tests {
         let dims = mps.bond_dims();
         // GHZ state has bond dim 2 everywhere
         assert!(dims.iter().all(|&d| d == 2), "dims = {dims:?}");
+    }
+
+    /// `expectation_z_all` must agree with a naïve loop over
+    /// `expectation_z(q)` on a non-trivial entangled state.
+    #[test]
+    fn expectation_z_all_matches_naive_loop() {
+        let n = 10;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.3), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.7));
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.5), 32).unwrap();
+        }
+
+        let z_fast = mps.expectation_z_all();
+        let z_naive: Vec<f64> = (0..n).map(|q| mps.expectation_z(q)).collect();
+
+        assert_eq!(z_fast.len(), n);
+        for q in 0..n {
+            let err = (z_fast[q] - z_naive[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: fast={} naive={} err={err:e}",
+                z_fast[q],
+                z_naive[q]
+            );
+        }
     }
 }

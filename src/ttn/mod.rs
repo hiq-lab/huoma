@@ -347,9 +347,7 @@ impl Ttn {
         let mut result = vec![0.0_f64; n];
         match &mut self.backend {
             Backend::Linear(mps) => {
-                for q in 0..n {
-                    result[q] = mps.expectation_z(q);
-                }
+                return mps.expectation_z_all();
             }
             Backend::Tree { sites, center, .. } => {
                 // DFS order from the current centre — consecutive visits
