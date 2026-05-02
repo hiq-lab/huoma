@@ -1,0 +1,48 @@
+warning: variable does not need to be mutable
+   --> src/ttn/projected.rs:111:13
+    |
+111 |         let mut island_states: Vec<IslandState> = islands
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `boundary_tensors` is never read
+  --> src/ttn/projected.rs:46:5
+   |
+43 | struct IslandState {
+   |        ----------- field in this struct
+...
+46 |     boundary_tensors: Vec<BoundaryTensor>,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `partition` is never read
+  --> src/ttn/projected.rs:58:5
+   |
+54 | pub struct ProjectedTtn {
+   |            ------------ field in this struct
+...
+58 |     partition: TreePartition,
+   |     ^^^^^^^^^
+
+warning: `huoma` (lib) generated 3 warnings (run `cargo fix --lib -p huoma` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running tests/adiabatic_ramp_scale.rs (target/release/deps/adiabatic_ramp_scale-67dde32e19340001)
+
+running 1 test
+[adiabatic 1M] Mps::new (1000000): 12.04ms
+[adiabatic 1M] |+⟩^⊗N preparation: 5.768958ms
+test adiabatic_ramp_1m_qubits_chain_completes has been running for over 60 seconds
+[adiabatic 1M] canonicalize: every 5 steps + after last, total = 63.63s
+[adiabatic 1M] 50 ramp steps at χ=8: 1092.51s (21.85s/step)
+[adiabatic 1M] expectation_z all (1000000): 10.54s, max|⟨Z⟩|=0.037, mean|⟨Z⟩|=0.019, mean⟨Z⟩=-0.019
+
+[adiabatic 1M] DONE: 1000000 qubits, χ=8, 50 steps, total = 1107.63s, norm² = 1.000000 (in 4.56s, informational), discarded = 2.0782e3
+
+test adiabatic_ramp_1m_qubits_chain_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1107.84s
+

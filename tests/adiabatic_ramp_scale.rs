@@ -42,6 +42,15 @@ fn run_adiabatic_chain(n: usize, n_steps: usize, max_bond: usize, dt: f64, tag: 
 
     let chi_per_bond: Vec<usize> = vec![max_bond; n.saturating_sub(1)];
 
+    // Canonicalize periodically through the ramp (including after the
+    // last step). At scale, the post-SVD sqrt(S)/sqrt(S) splitting
+    // accumulates per-site noise that makes some local Θ matrix
+    // numerically singular and faer's SVD fails. Tighter K helps but
+    // costs more. K=5 keeps both 1M (~50s extra over 1050s ramp) and
+    // 100K (~3s over 105s ramp) tractable while being conservative
+    // enough to keep canon-itself robust.
+    let canon_every: usize = 5;
+    let mut t_canon_total = std::time::Duration::ZERO;
     let ramp_start = std::time::Instant::now();
     for k in 0..n_steps {
         let s = (k as f64 + 0.5) / n_steps as f64;
@@ -52,18 +61,17 @@ fn run_adiabatic_chain(n: usize, n_steps: usize, max_bond: usize, dt: f64, tag: 
             dt,
         };
         apply_kim_step(&mut state, params, &chi_per_bond).unwrap();
+        if (k + 1) % canon_every == 0 || k + 1 == n_steps {
+            let canon_start = std::time::Instant::now();
+            state.canonicalize_left_and_normalize().unwrap();
+            t_canon_total += canon_start.elapsed();
+        }
     }
     let t_ramp = ramp_start.elapsed();
 
-    // Canonicalize before measurement: heavy-truncation runs at scale
-    // accumulate per-site noise that would overflow the env-contraction
-    // in `expectation_z_all`. One left-canonical SVD sweep puts all the
-    // norm on the rightmost site, where dividing it out gives a unit-norm
-    // state with bounded tensor entries.
-    let canon_start = std::time::Instant::now();
-    state.canonicalize_left_and_normalize().unwrap();
-    let t_canon = canon_start.elapsed();
-    eprintln!("[{tag}] canonicalize-and-normalize: {t_canon:.2?}");
+    eprintln!(
+        "[{tag}] canonicalize: every {canon_every} steps + after last, total = {t_canon_total:.2?}"
+    );
     eprintln!(
         "[{tag}] {n_steps} ramp steps at χ={max_bond}: {t_ramp:.2?} ({:.2?}/step)",
         t_ramp / n_steps as u32
