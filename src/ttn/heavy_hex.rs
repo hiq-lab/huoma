@@ -327,6 +327,134 @@ impl HeavyHexLayout {
         let _ = layout.tree();
         Ok(layout)
     }
+
+    /// Parametric heavy-hex-style grid layout.
+    ///
+    /// Builds a regularised heavy-hex pattern with `rows` data rows of
+    /// width `2*bridges_per_row + 1` each, separated by `rows - 1` bridge
+    /// rows of `bridges_per_row` bridges each. Bridge `k` in every bridge
+    /// row attaches at column `2*k` of the row above and the row below
+    /// (no alternating stagger — this is a regular brick pattern, not the
+    /// hex stagger of IBM Eagle).
+    ///
+    /// # Sizing
+    ///
+    /// `n_qubits = rows * (2*bridges_per_row + 1) + (rows - 1) * bridges_per_row`.
+    /// Examples: `(20, 20)` → 1200, `(63, 63)` → 11907, `(200, 200)` → 120000.
+    ///
+    /// # Spanning tree
+    ///
+    /// Same convention as Eagle 127: every horizontal row edge is a tree
+    /// edge, every bridge's "up" edge is a tree edge, and the leftmost
+    /// bridge of each bridge row is a through-bridge whose "down" edge
+    /// also enters the tree. The remaining `(rows-1) * (bridges_per_row-1)`
+    /// "down" bridge edges are non-tree, matching the independent-cycle
+    /// count of the regular grid.
+    ///
+    /// # Heavy-path decomposition
+    ///
+    /// `rows` row-paths plus `(rows - 1) * bridges_per_row` bridge
+    /// singletons.
+    ///
+    /// # Naming honesty
+    ///
+    /// Called `grid` rather than `heavy_hex` because this lacks the
+    /// alternating stagger of true heavy-hex (IBM Eagle has that, see
+    /// [`HeavyHexLayout::ibm_eagle_127`]). Topologically equivalent at the
+    /// gate-application level (degree-3 data, degree-2 bridges, same
+    /// spanning-tree machinery), so the TTN simulator and validation
+    /// chain transfer unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `rows == 0` or `bridges_per_row == 0`.
+    #[must_use]
+    pub fn grid(rows: usize, bridges_per_row: usize) -> Self {
+        assert!(rows >= 1, "rows must be >= 1");
+        assert!(bridges_per_row >= 1, "bridges_per_row must be >= 1");
+
+        let r = rows;
+        let b = bridges_per_row;
+        let row_width = 2 * b + 1;
+        let n_data = r * row_width;
+        let n_bridges = (r - 1) * b;
+        let n_qubits = n_data + n_bridges;
+
+        let data_row_start = |i: usize| i * row_width;
+        let bridge_row_start = |j: usize| n_data + j * b;
+
+        // Spanning-tree edges: horizontal + every "up" + leftmost "down".
+        let mut tree_edges: Vec<SerdeEdge> =
+            Vec::with_capacity(r * (row_width - 1) + (r - 1) * (b + 1));
+        for i in 0..r {
+            let start = data_row_start(i);
+            for q in 0..(row_width - 1) {
+                tree_edges.push(canon(start + q, start + q + 1));
+            }
+        }
+        for j in 0..(r.saturating_sub(1)) {
+            for k in 0..b {
+                let bridge = bridge_row_start(j) + k;
+                let up = data_row_start(j) + 2 * k;
+                tree_edges.push(canon(bridge, up));
+                if k == 0 {
+                    let down = data_row_start(j + 1) + 2 * k;
+                    tree_edges.push(canon(bridge, down));
+                }
+            }
+        }
+        tree_edges.sort_unstable();
+        tree_edges.dedup();
+        debug_assert_eq!(
+            tree_edges.len(),
+            n_qubits - 1,
+            "spanning tree must have n_qubits - 1 edges"
+        );
+
+        // Non-tree edges: dropped "down" edges of non-leftmost bridges.
+        let mut non_tree_edges: Vec<SerdeEdge> =
+            Vec::with_capacity(r.saturating_sub(1) * b.saturating_sub(1));
+        for j in 0..(r.saturating_sub(1)) {
+            for k in 1..b {
+                let bridge = bridge_row_start(j) + k;
+                let down = data_row_start(j + 1) + 2 * k;
+                non_tree_edges.push(canon(bridge, down));
+            }
+        }
+        non_tree_edges.sort_unstable();
+        non_tree_edges.dedup();
+        debug_assert_eq!(
+            non_tree_edges.len(),
+            r.saturating_sub(1) * b.saturating_sub(1),
+            "non-tree edge count must be (rows-1) * (bridges_per_row-1)"
+        );
+
+        // Heavy paths: R row paths, then (R-1)*B bridge singletons.
+        let mut heavy_paths: Vec<Vec<usize>> = Vec::with_capacity(r + n_bridges);
+        for i in 0..r {
+            let start = data_row_start(i);
+            heavy_paths.push((start..start + row_width).collect());
+        }
+        for j in 0..(r.saturating_sub(1)) {
+            for k in 0..b {
+                heavy_paths.push(vec![bridge_row_start(j) + k]);
+            }
+        }
+        debug_assert_eq!(
+            heavy_paths.iter().map(Vec::len).sum::<usize>(),
+            n_qubits,
+            "heavy paths must cover every qubit exactly once"
+        );
+
+        Self {
+            name: format!("heavy_hex_grid_{r}x{b}"),
+            n_qubits,
+            tree_edges,
+            non_tree_edges,
+            heavy_paths,
+            tree: std::cell::OnceCell::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -457,5 +585,139 @@ mod tests {
             18
         );
         assert_eq!(layout.non_tree_edges().len(), 18);
+    }
+
+    fn expected_grid_n_qubits(rows: usize, b: usize) -> usize {
+        rows * (2 * b + 1) + (rows - 1) * b
+    }
+
+    #[test]
+    fn grid_2x1_minimal_structure() {
+        // R=2, B=1: smallest non-trivial grid. 2 rows of 3 qubits + 1
+        // bridge = 7 qubits, no non-tree edges (single bridge is always
+        // a through-bridge).
+        let layout = HeavyHexLayout::grid(2, 1);
+        assert_eq!(layout.n_qubits(), 7);
+        assert_eq!(layout.tree_edges.len(), 6);
+        assert_eq!(layout.non_tree_edges().len(), 0);
+        assert_eq!(layout.tree().n_qubits(), 7);
+        assert_eq!(layout.tree().n_edges(), 6);
+    }
+
+    #[test]
+    fn grid_qubit_count_formula() {
+        for &(r, b) in &[(1, 1), (2, 2), (3, 2), (5, 4), (7, 4), (20, 20)] {
+            let layout = HeavyHexLayout::grid(r, b);
+            assert_eq!(
+                layout.n_qubits(),
+                expected_grid_n_qubits(r, b),
+                "n_qubits mismatch for ({r}, {b})"
+            );
+            assert_eq!(layout.tree_edges.len(), layout.n_qubits() - 1);
+        }
+    }
+
+    #[test]
+    fn grid_non_tree_edge_count_matches_independent_cycles() {
+        // (R-1)*(B-1) independent cycles in the regular grid.
+        for &(r, b) in &[(2, 1), (2, 2), (3, 2), (5, 4), (7, 4), (10, 8)] {
+            let layout = HeavyHexLayout::grid(r, b);
+            let expected = (r - 1) * (b - 1);
+            assert_eq!(
+                layout.non_tree_edges().len(),
+                expected,
+                "non-tree count mismatch for ({r}, {b})"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_through_bridges_have_degree_2() {
+        // Leftmost bridge of every bridge row must be a through-bridge
+        // (degree 2: one up, one down in the spanning tree).
+        let r = 5_usize;
+        let b = 4_usize;
+        let layout = HeavyHexLayout::grid(r, b);
+        let n_data = r * (2 * b + 1);
+        for j in 0..(r - 1) {
+            let leftmost_bridge = n_data + j * b;
+            assert_eq!(
+                layout.tree().degree(leftmost_bridge),
+                2,
+                "through-bridge {leftmost_bridge} (row {j}) should have tree degree 2"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_leaf_bridges_have_degree_1() {
+        // Non-leftmost bridges keep only their "up" edge → tree leaves.
+        let r = 5_usize;
+        let b = 4_usize;
+        let layout = HeavyHexLayout::grid(r, b);
+        let n_data = r * (2 * b + 1);
+        for j in 0..(r - 1) {
+            for k in 1..b {
+                let bridge = n_data + j * b + k;
+                assert_eq!(
+                    layout.tree().degree(bridge),
+                    1,
+                    "leaf bridge {bridge} (row {j}, col {k}) should have tree degree 1"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grid_heavy_paths_partition_every_qubit_once() {
+        for &(r, b) in &[(2, 1), (3, 2), (7, 4), (10, 6)] {
+            let layout = HeavyHexLayout::grid(r, b);
+            let mut count = vec![0u32; layout.n_qubits()];
+            for path in layout.heavy_paths() {
+                for &q in path {
+                    count[q] += 1;
+                }
+            }
+            assert!(
+                count.iter().all(|&c| c == 1),
+                "({r}, {b}): heavy paths must cover every qubit exactly once"
+            );
+        }
+    }
+
+    #[test]
+    fn grid_tree_edges_are_canonical_and_sorted() {
+        let layout = HeavyHexLayout::grid(7, 4);
+        for w in layout.tree_edges.windows(2) {
+            assert!(w[0] < w[1], "tree edges must be strictly sorted");
+        }
+        for e in &layout.tree_edges {
+            assert!(e[0] < e[1], "tree edge {e:?} must satisfy a < b");
+        }
+        for e in layout.non_tree_edges() {
+            assert!(e[0] < e[1], "non-tree edge {e:?} must satisfy a < b");
+        }
+    }
+
+    #[test]
+    fn grid_json_round_trip_preserves_structure() {
+        let layout = HeavyHexLayout::grid(5, 4);
+        let j = layout.to_json();
+        let back = HeavyHexLayout::from_json(&j).unwrap();
+        assert_eq!(back.name, layout.name);
+        assert_eq!(back.n_qubits, layout.n_qubits);
+        assert_eq!(back.tree_edges, layout.tree_edges);
+        assert_eq!(back.non_tree_edges, layout.non_tree_edges);
+        assert_eq!(back.heavy_paths, layout.heavy_paths);
+    }
+
+    #[test]
+    fn grid_eagle_unrelated_path_unchanged() {
+        // Defensive: adding `grid` must not alter the Eagle 127 layout.
+        let eagle = HeavyHexLayout::ibm_eagle_127();
+        assert_eq!(eagle.n_qubits(), 127);
+        assert_eq!(eagle.tree_edges.len(), 126);
+        assert_eq!(eagle.non_tree_edges().len(), 18);
+        assert_eq!(eagle.name, "ibm_eagle_127");
     }
 }
