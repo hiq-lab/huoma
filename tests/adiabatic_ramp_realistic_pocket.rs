@@ -189,6 +189,10 @@ enum LigMode {
     All,
     /// Only the closest single edge with full coupling (perturbativ-realistic)
     OnlyClosest,
+    /// All N lig edges enumerated, but coupling = 0 (decoy: tests whether the
+    /// step-25 spike is genuine ligand-onset signal or schedule artifact from
+    /// h_x dropping discontinuously to 0 at s=0.5).
+    Decoy,
 }
 
 fn run_pocket_variant(json_path: &str, out_path: &str, mode: LigMode) -> Result<(String, f64, f64, usize)> {
@@ -251,21 +255,30 @@ fn run_pocket_variant(json_path: &str, out_path: &str, mode: LigMode) -> Result<
         ttn.apply_single(q, h);
     }
 
-    let lig_edges_pairs: Vec<(usize, usize)> = match mode {
-        LigMode::All => topo.lig_pocket_edges.iter().map(|e| (e.a, e.b)).collect(),
+    let (lig_edges_pairs, j_lig_scale): (Vec<(usize, usize)>, f64) = match mode {
+        LigMode::All => (topo.lig_pocket_edges.iter().map(|e| (e.a, e.b)).collect(), 1.0),
         LigMode::OnlyClosest => {
-            // pick the lig-pocket edge with smallest distance
             let closest = topo
                 .lig_pocket_edges
                 .iter()
                 .min_by(|a, b| a.distance_a.partial_cmp(&b.distance_a).unwrap())
                 .expect("non-empty lig edges");
-            vec![(closest.a, closest.b)]
+            (vec![(closest.a, closest.b)], 1.0)
+        }
+        LigMode::Decoy => {
+            // same edge enumeration as All, but coupling magnitude = 0
+            (topo.lig_pocket_edges.iter().map(|e| (e.a, e.b)).collect(), 0.0)
         }
     };
-    eprintln!("  lig_mode = {:?}, n_active_lig_edges = {}",
-              match mode { LigMode::All => "All", LigMode::OnlyClosest => "OnlyClosest" },
-              lig_edges_pairs.len());
+    let mode_label = match mode {
+        LigMode::All => "All",
+        LigMode::OnlyClosest => "OnlyClosest",
+        LigMode::Decoy => "Decoy(j_lig=0)",
+    };
+    eprintln!(
+        "  lig_mode = {}, n_active_lig_edges = {}, j_lig_scale = {}",
+        mode_label, lig_edges_pairs.len(), j_lig_scale
+    );
 
     let n_tree_edges = tree_edges.len();
     let mut prev_disc: Vec<f64> = vec![0.0; n_tree_edges];
@@ -277,7 +290,8 @@ fn run_pocket_variant(json_path: &str, out_path: &str, mode: LigMode) -> Result<
     let t_start = std::time::Instant::now();
     for k in 0..N_STEPS {
         let s = (k as f64 + 0.5) / N_STEPS as f64;
-        let sched = schedule(s, lig_edges_pairs.len());
+        let mut sched = schedule(s, lig_edges_pairs.len());
+        sched.j_lig_per_edge *= j_lig_scale;
 
         // 1. Apo-ZZ on tree edges
         if sched.j_apo.abs() > 1e-15 {
@@ -378,6 +392,11 @@ fn realistic_pocket_three_ligands() -> Result<()> {
         let out_one = format!("results/VQ-110/realistic_{label}_one.tsv");
         let r_one = run_pocket_variant(json, &out_one, LigMode::OnlyClosest)?;
         results.push((format!("{}_one", r_one.0), r_one.1, r_one.2, r_one.3));
+
+        // Decoy-Variante: j_lig=0 (keine Bindung) als Negativ-Kontrolle
+        let out_dec = format!("results/VQ-110/realistic_{label}_decoy.tsv");
+        let r_dec = run_pocket_variant(json, &out_dec, LigMode::Decoy)?;
+        results.push((format!("{}_decoy", r_dec.0), r_dec.1, r_dec.2, r_dec.3));
     }
 
     println!("\n=== Phase 5 Zusammenfassung ===");
