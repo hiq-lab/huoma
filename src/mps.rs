@@ -454,6 +454,152 @@ impl Mps {
         env_z[0].re / denom
     }
 
+    /// Multi-qubit Z-product expectation `<ψ| ∏_q Z_q |ψ>` over the given
+    /// qubit positions. Computed in a single sweep, normalized by `<ψ|ψ>`.
+    ///
+    /// `positions` may be unsorted and may contain duplicates; duplicates
+    /// cancel (Z² = I), so an even count at one site contributes +1 and an
+    /// odd count contributes -1.
+    ///
+    /// Returns `0.0` if the state has zero norm.
+    ///
+    /// # Panics
+    /// Panics if any position is `>= n_qubits`.
+    #[must_use]
+    pub fn expectation_z_string(&self, positions: &[usize]) -> f64 {
+        // Build a per-site parity flag: true if Z applies (odd count of position references).
+        let mut z_at = vec![false; self.n_qubits];
+        for &p in positions {
+            assert!(p < self.n_qubits, "position {p} out of range");
+            z_at[p] = !z_at[p];
+        }
+
+        // Two parallel left environments: numerator (with Z at marked sites)
+        // and denominator (identity).
+        let mut env_z: Vec<C> = vec![C::new(1.0, 0.0)];
+        let mut env_n: Vec<C> = vec![C::new(1.0, 0.0)];
+        let mut env_ld = 1_usize;
+
+        for (site_idx, site) in self.sites.iter().enumerate() {
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            debug_assert_eq!(env_ld, ld, "environment dim mismatch in expectation_z_string");
+
+            let z_sign_1: f64 = if z_at[site_idx] { -1.0 } else { 1.0 };
+
+            let mut new_env_z = vec![C::new(0.0, 0.0); rd * rd];
+            let mut new_env_n = vec![C::new(0.0, 0.0); rd * rd];
+
+            for ap in 0..ld {
+                for a in 0..ld {
+                    let ez = env_z[ap * ld + a];
+                    let en = env_n[ap * ld + a];
+                    if (ez.re == 0.0 && ez.im == 0.0) && (en.re == 0.0 && en.im == 0.0) {
+                        continue;
+                    }
+                    for bp in 0..rd {
+                        let m0_apbp = site.m0[ap * rd + bp].conj();
+                        let m1_apbp = site.m1[ap * rd + bp].conj();
+                        for b in 0..rd {
+                            let m0_ab = site.m0[a * rd + b];
+                            let m1_ab = site.m1[a * rd + b];
+
+                            let term0 = m0_apbp * m0_ab;
+                            let term1 = m1_apbp * m1_ab;
+
+                            new_env_z[bp * rd + b] += ez * (term0 + term1 * z_sign_1);
+                            new_env_n[bp * rd + b] += en * (term0 + term1);
+                        }
+                    }
+                }
+            }
+            env_z = new_env_z;
+            env_n = new_env_n;
+            env_ld = rd;
+        }
+
+        debug_assert_eq!(env_z.len(), 1);
+        debug_assert_eq!(env_n.len(), 1);
+        let denom = env_n[0].re;
+        if denom.abs() < 1e-30 {
+            return 0.0;
+        }
+        env_z[0].re / denom
+    }
+
+    /// Pauli-string expectation `<ψ| P |ψ>` for `P = ⊗_q P_q` where each
+    /// `P_q ∈ {I, X, Y, Z}`. The string is character-by-character, length
+    /// must equal `n_qubits`.
+    ///
+    /// Implementation: clone the state, apply per-site basis rotations
+    /// (`H` for X, `(1/√2)[[1,-i],[1,i]]` for Y, identity for Z and I),
+    /// then evaluate the Z-string expectation on the rotated state. The
+    /// result is real because every Pauli string is Hermitian.
+    ///
+    /// # Errors
+    /// Returns `InvalidPauliString` if the string length disagrees with
+    /// `n_qubits` or if it contains a character outside `IXYZ` (case-insensitive).
+    pub fn expectation_pauli_string(&self, spec: &str) -> Result<f64> {
+        if spec.len() != self.n_qubits {
+            return Err(crate::error::ProjError::InvalidPauliString(format!(
+                "length {} does not match n_qubits {}",
+                spec.len(),
+                self.n_qubits
+            )));
+        }
+
+        // Hadamard for X.
+        let inv_sqrt2 = 1.0 / std::f64::consts::SQRT_2;
+        let h: [[C; 2]; 2] = [
+            [C::new(inv_sqrt2, 0.0), C::new(inv_sqrt2, 0.0)],
+            [C::new(inv_sqrt2, 0.0), C::new(-inv_sqrt2, 0.0)],
+        ];
+        // R_Y = (1/√2) [[1, -i], [1, i]] satisfies R_Y · Y · R_Y† = Z.
+        let ry: [[C; 2]; 2] = [
+            [C::new(inv_sqrt2, 0.0), C::new(0.0, -inv_sqrt2)],
+            [C::new(inv_sqrt2, 0.0), C::new(0.0, inv_sqrt2)],
+        ];
+
+        // Validate + collect Z-string positions in one pass.
+        let mut z_positions: Vec<usize> = Vec::new();
+        let mut x_positions: Vec<usize> = Vec::new();
+        let mut y_positions: Vec<usize> = Vec::new();
+        for (q, c) in spec.chars().enumerate() {
+            match c {
+                'I' | 'i' => {} // identity, skip
+                'Z' | 'z' => z_positions.push(q),
+                'X' | 'x' => {
+                    x_positions.push(q);
+                    z_positions.push(q);
+                }
+                'Y' | 'y' => {
+                    y_positions.push(q);
+                    z_positions.push(q);
+                }
+                other => {
+                    return Err(crate::error::ProjError::InvalidPauliString(format!(
+                        "unknown character {other:?} at position {q}; expected one of IXYZ"
+                    )));
+                }
+            }
+        }
+
+        // Fast path: no rotations needed (all-Z and identity sites).
+        if x_positions.is_empty() && y_positions.is_empty() {
+            return Ok(self.expectation_z_string(&z_positions));
+        }
+
+        // Otherwise: clone and rotate.
+        let mut rotated = self.clone();
+        for q in &x_positions {
+            rotated.apply_single(*q, h);
+        }
+        for q in &y_positions {
+            rotated.apply_single(*q, ry);
+        }
+        Ok(rotated.expectation_z_string(&z_positions))
+    }
+
     /// Sweep left-to-right SVDs that put the MPS in left-canonical
     /// form, then absorb the global norm into the rightmost site and
     /// normalize. After this returns, every site `q < n_qubits - 1`
@@ -1072,9 +1218,167 @@ mod tests {
         assert!(dims.iter().all(|&d| d == 2), "dims = {dims:?}");
     }
 
-    /// `canonicalize_left_and_normalize` must produce left-isometries on
-    /// every non-last site, normalize the rightmost site's Frobenius² to
-    /// 1, and leave `⟨Z⟩` invariant up to rounding.
+    /// Brute-force ⟨ψ|P|ψ⟩ via dense statevector contraction. Reference for tests.
+    fn pauli_expectation_dense(mps: &Mps, spec: &str) -> f64 {
+        let n = mps.n_qubits;
+        assert_eq!(spec.len(), n);
+        let psi = mps.to_statevector();
+        let dim = 1usize << n;
+
+        // Apply Pauli string to a fresh statevector copy.
+        let mut psi_p = psi.clone();
+        for (q, c) in spec.chars().enumerate() {
+            // q-th qubit; bit position in the index is (n - 1 - q).
+            let bit_pos = n - 1 - q;
+            let mask = 1usize << bit_pos;
+            match c {
+                'I' => {}
+                'X' => {
+                    for i in 0..dim {
+                        if i & mask == 0 {
+                            let j = i | mask;
+                            psi_p.swap(i, j);
+                        }
+                    }
+                }
+                'Y' => {
+                    let new_p = {
+                        let mut out = vec![C::new(0.0, 0.0); dim];
+                        for i in 0..dim {
+                            let bit = (i >> bit_pos) & 1;
+                            let j = i ^ mask;
+                            // Y|0⟩ = i|1⟩, Y|1⟩ = -i|0⟩.
+                            if bit == 0 {
+                                out[j] = C::new(0.0, 1.0) * psi_p[i];
+                            } else {
+                                out[j] = C::new(0.0, -1.0) * psi_p[i];
+                            }
+                        }
+                        out
+                    };
+                    psi_p = new_p;
+                }
+                'Z' => {
+                    for i in 0..dim {
+                        if (i >> bit_pos) & 1 == 1 {
+                            psi_p[i] = -psi_p[i];
+                        }
+                    }
+                }
+                _ => panic!("unknown pauli {c}"),
+            }
+        }
+
+        // Inner product ⟨ψ|P|ψ⟩.
+        let mut acc = C::new(0.0, 0.0);
+        let mut norm = 0.0_f64;
+        for i in 0..dim {
+            acc += psi[i].conj() * psi_p[i];
+            norm += psi[i].norm_sqr();
+        }
+        if norm < 1e-30 {
+            return 0.0;
+        }
+        // Pauli strings are Hermitian → expectation is real.
+        acc.re / norm
+    }
+
+    #[test]
+    fn z_string_matches_single_z() {
+        let mut mps = Mps::new(4);
+        mps.apply_single(1, h()); // qubit 1 in superposition
+        for q in 0..mps.n_qubits {
+            let single = mps.expectation_z(q);
+            let multi = mps.expectation_z_string(&[q]);
+            assert!(
+                (single - multi).abs() < 1e-12,
+                "site {q}: single = {single}, multi = {multi}"
+            );
+        }
+    }
+
+    #[test]
+    fn z_string_on_bell_zz_is_one() {
+        // Bell state has ⟨Z₀Z₁⟩ = 1.
+        let mut mps = Mps::new(2);
+        mps.apply_single(0, h());
+        mps.apply_two_qubit(0, cx(), 4).unwrap();
+        let zz = mps.expectation_z_string(&[0, 1]);
+        assert!((zz - 1.0).abs() < 1e-10, "expected 1.0, got {zz}");
+    }
+
+    #[test]
+    fn pauli_string_matches_dense_on_bell() {
+        let mut mps = Mps::new(2);
+        mps.apply_single(0, h());
+        mps.apply_two_qubit(0, cx(), 4).unwrap();
+        for spec in &["II", "ZZ", "XX", "YY", "ZI", "IZ", "XY", "YX", "XZ", "ZX"] {
+            let mps_val = mps.expectation_pauli_string(spec).unwrap();
+            let dense_val = pauli_expectation_dense(&mps, spec);
+            assert!(
+                (mps_val - dense_val).abs() < 1e-10,
+                "spec = {spec}: mps = {mps_val}, dense = {dense_val}"
+            );
+        }
+    }
+
+    #[test]
+    fn pauli_string_matches_dense_on_random_circuit() {
+        // Build a non-trivial 4-qubit state via H + CX layers.
+        let n = 4;
+        let mut mps = Mps::new(n);
+        mps.apply_single(0, h());
+        mps.apply_single(2, h());
+        mps.apply_two_qubit(0, cx(), 8).unwrap();
+        mps.apply_two_qubit(1, cx(), 8).unwrap();
+        mps.apply_two_qubit(2, cx(), 8).unwrap();
+        mps.apply_single(1, rx(0.7));
+        mps.apply_single(3, ry(1.3));
+
+        // A representative slice of Pauli strings (not exhaustive, but covers
+        // every char + several mixed positions).
+        for spec in &[
+            "IIII", "ZZZZ", "XYZI", "IZIZ", "XXXX", "YYYY", "ZIXY", "XIIY", "ZIYI", "IIIX",
+        ] {
+            let mps_val = mps.expectation_pauli_string(spec).unwrap();
+            let dense_val = pauli_expectation_dense(&mps, spec);
+            assert!(
+                (mps_val - dense_val).abs() < 1e-9,
+                "spec = {spec}: mps = {mps_val}, dense = {dense_val}, diff = {}",
+                (mps_val - dense_val).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn pauli_string_invalid_length_rejected() {
+        let mps = Mps::new(3);
+        let res = mps.expectation_pauli_string("XX");
+        assert!(matches!(
+            res,
+            Err(crate::error::ProjError::InvalidPauliString(_))
+        ));
+    }
+
+    #[test]
+    fn pauli_string_invalid_char_rejected() {
+        let mps = Mps::new(3);
+        let res = mps.expectation_pauli_string("XQZ");
+        assert!(matches!(
+            res,
+            Err(crate::error::ProjError::InvalidPauliString(_))
+        ));
+    }
+
+    #[test]
+    fn z_string_duplicate_positions_cancel() {
+        // Same position twice → identity → ⟨I⟩ = 1 on a normalized state.
+        let mut mps = Mps::new(3);
+        mps.apply_single(0, h());
+        mps.apply_single(2, ry(0.4));
+        let val = mps.expectation_z_string(&[1, 1]);
+        assert!((val - 1.0).abs() < 1e-12, "got {val}");
+    }
     #[test]
     fn canonicalize_left_and_normalize_preserves_expectation() {
         let n = 8;

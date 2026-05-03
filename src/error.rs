@@ -22,6 +22,9 @@ pub enum ProjError {
 
     #[error("empty circuit")]
     EmptyCircuit,
+
+    #[error("invalid Pauli string: {0}")]
+    InvalidPauliString(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProjError>;
