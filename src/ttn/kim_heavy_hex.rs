@@ -844,4 +844,123 @@ mod tests {
              final max|⟨Z⟩| = {max_abs_z:.3e}, norm² = {nsq:.15}"
         );
     }
+
+    /// Adiabatic ramp on a heavy-hex grid motif with non-tree edges.
+    ///
+    /// The chain anchor uses 1D nearest-neighbour, the binary-tree anchor
+    /// uses a tree without non-tree edges. This third anchor is the actual
+    /// 2D-annealer-thread case: a regular heavy-hex grid (`grid(3, 2)`,
+    /// 19 qubits, 2 non-tree edges) where `apply_kim_step_heavy_hex` has
+    /// to route both the tree-edge ZZ layer and the non-tree-edge ZZ layer
+    /// (the swap-network path) through the same gauge state every step.
+    ///
+    /// Validates byte-for-byte against `DenseState` applying ZZ on every
+    /// physical-Hamiltonian edge (tree + non-tree). If this passes at
+    /// machine precision, the same primitive at scale produces faithful
+    /// closed-system dynamics modulo bounded χ-truncation.
+    #[test]
+    fn adiabatic_ramp_heavy_hex_grid_matches_dense_lossless() {
+        let layout = HeavyHexLayout::grid(3, 2);
+        let n = layout.n_qubits();
+        assert_eq!(n, 19, "grid(3,2) should be 19 qubits");
+        assert_eq!(layout.non_tree_edges().len(), 2);
+
+        let n_steps = 50;
+        let dt = 0.1_f64;
+
+        let h_x_0 = 1.0_f64;
+        let j_0 = 1.0_f64;
+        let h_z_0 = 0.5_f64;
+
+        let topology = layout.tree().clone();
+        assert!(
+            !topology.is_linear_chain(),
+            "grid(3,2) must exercise Backend::Tree, not the chain fast path"
+        );
+        let tree_edges_owned: Vec<Edge> = topology.edges().to_vec();
+        let non_tree_edges: Vec<Edge> = layout
+            .non_tree_edges()
+            .iter()
+            .map(|&[a, b]| Edge { a, b })
+            .collect();
+        let coupling: Vec<Edge> = tree_edges_owned
+            .iter()
+            .copied()
+            .chain(non_tree_edges.iter().copied())
+            .collect();
+
+        let mut ttn = Ttn::new(topology);
+        let mut dense = DenseState::zero(n);
+
+        let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
+        let h_gate: [[C; 2]; 2] = [
+            [C::new(inv_sqrt2, 0.0), C::new(inv_sqrt2, 0.0)],
+            [C::new(inv_sqrt2, 0.0), C::new(-inv_sqrt2, 0.0)],
+        ];
+        for q in 0..n {
+            ttn.apply_single(q, h_gate);
+            dense.apply_single(q, h_gate);
+        }
+
+        let mut max_err = 0.0_f64;
+
+        for k in 0..n_steps {
+            let s = (k as f64 + 0.5) / n_steps as f64;
+            let params = KimParams {
+                j: s * j_0,
+                h_x: -(1.0 - s) * h_x_0,
+                h_z: s * h_z_0,
+                dt,
+            };
+
+            apply_kim_step_heavy_hex(&mut ttn, &non_tree_edges, params, usize::MAX).unwrap();
+
+            // Dense reference: ZZ on every coupling edge (tree + non-tree),
+            // RZ on every site, RX on every site — same layer order as
+            // apply_kim_step_heavy_hex.
+            let zz = zz_gate(params.j * params.dt);
+            for e in &coupling {
+                dense.apply_two_qubit(e.a, e.b, zz);
+            }
+            if params.h_z != 0.0 {
+                let rz = rz_gate(2.0 * params.h_z * params.dt);
+                for q in 0..n {
+                    dense.apply_single(q, rz);
+                }
+            }
+            let rx = rx_gate(2.0 * params.h_x * params.dt);
+            for q in 0..n {
+                dense.apply_single(q, rx);
+            }
+
+            let z_ttn = ttn.expectation_z_all();
+            for q in 0..n {
+                let z_dense = dense.expectation_z(q);
+                let err = (z_ttn[q] - z_dense).abs();
+                if err > max_err {
+                    max_err = err;
+                }
+            }
+        }
+
+        assert!(
+            max_err < 1e-10,
+            "heavy-hex-grid adiabatic ramp diverged from dense: max ⟨Z⟩ err = {max_err:e}"
+        );
+
+        let z_final = ttn.expectation_z_all();
+        let max_abs_z: f64 = z_final.iter().map(|z| z.abs()).fold(0.0, f64::max);
+        assert!(
+            max_abs_z > 0.05,
+            "ramp produced trivial dynamics on heavy-hex grid: max|⟨Z⟩| = {max_abs_z:e}"
+        );
+
+        let nsq = ttn.norm_squared();
+        assert!((nsq - 1.0).abs() < 1e-9, "norm² drifted: {nsq:e}");
+
+        eprintln!(
+            "[adiabatic-ramp grid(3,2) N={n} steps={n_steps}] max ⟨Z⟩ err = {max_err:.3e}, \
+             final max|⟨Z⟩| = {max_abs_z:.3e}, norm² = {nsq:.15}"
+        );
+    }
 }
