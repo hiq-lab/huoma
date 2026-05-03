@@ -1,0 +1,49 @@
+warning: variable does not need to be mutable
+   --> src/ttn/projected.rs:111:13
+    |
+111 |         let mut island_states: Vec<IslandState> = islands
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `boundary_tensors` is never read
+  --> src/ttn/projected.rs:46:5
+   |
+43 | struct IslandState {
+   |        ----------- field in this struct
+...
+46 |     boundary_tensors: Vec<BoundaryTensor>,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `partition` is never read
+  --> src/ttn/projected.rs:58:5
+   |
+54 | pub struct ProjectedTtn {
+   |            ------------ field in this struct
+...
+58 |     partition: TreePartition,
+   |     ^^^^^^^^^
+
+warning: `huoma` (lib) generated 3 warnings (run `cargo fix --lib -p huoma` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/adiabatic_ramp_2d_scale.rs (target/release/deps/adiabatic_ramp_2d_scale-70286e09f3265f2e)
+
+running 1 test
+[2D-5K] HeavyHexLayout::grid(45, 30): 4065 qubits, 4064 tree edges, 1276 non-tree edges (100.12ms)
+[2D-5K] Ttn::new: 294.292µs
+[2D-5K] |+⟩^⊗N preparation: 17.166µs
+test adiabatic_ramp_2d_grid_5k_completes has been running for over 60 seconds
+[2D-5K] canonicalize: every 5 steps + after last, total = 172.17ms
+[2D-5K] 50 ramp steps at χ=8: 367.31s (7.35s/step)
+[2D-5K] expectation_z all (4065): 42.94ms, max|⟨Z⟩|=0.437, mean|⟨Z⟩|=0.246, mean⟨Z⟩=-0.079
+
+[2D-5K] DONE: 4065 qubits, χ=8, 50 steps, total = 367.45s, norm² = 1.000000 (in 42.00ns), discarded = 9.2889e0
+
+test adiabatic_ramp_2d_grid_5k_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 367.45s
+

@@ -1,0 +1,48 @@
+   Compiling huoma v1.0.0 (/Users/danielhinderink/Projects/HIQ/huoma)
+warning: variable does not need to be mutable
+   --> src/ttn/projected.rs:111:13
+    |
+111 |         let mut island_states: Vec<IslandState> = islands
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `boundary_tensors` is never read
+  --> src/ttn/projected.rs:46:5
+   |
+43 | struct IslandState {
+   |        ----------- field in this struct
+...
+46 |     boundary_tensors: Vec<BoundaryTensor>,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `partition` is never read
+  --> src/ttn/projected.rs:58:5
+   |
+54 | pub struct ProjectedTtn {
+   |            ------------ field in this struct
+...
+58 |     partition: TreePartition,
+   |     ^^^^^^^^^
+
+warning: `huoma` (lib) generated 3 warnings (run `cargo fix --lib -p huoma` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 7.76s
+     Running tests/projected_ttn_scale.rs (target/release/deps/projected_ttn_scale-8532a64b043a7107)
+
+running 1 test
+test projected_ttn_1b_qubits_completes has been running for over 60 seconds
+[1B] topology (1000000000 nodes): 105.11s
+[1B] partition: 6 volatile edges, 7 volatile qubits (0.000001%), 99.496973917s
+[1B] build: 1 islands, 7 volatile qubits, 23.227668125s
+[1B] 3 Floquet steps: 196.667µs
+[1B] expectation_z_all (1000000000 values): 637.524833ms
+
+[1B] DONE: 1000000000 qubits, 7 volatile (0.000001%), 1 islands, 3 steps, total = 228.91s, discarded = 0.0000e0
+test projected_ttn_1b_qubits_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 240.60s
+

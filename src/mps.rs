@@ -600,6 +600,285 @@ impl Mps {
         Ok(rotated.expectation_z_string(&z_positions))
     }
 
+    /// Sweep left-to-right SVDs that put the MPS in left-canonical
+    /// form, then absorb the global norm into the rightmost site and
+    /// normalize. After this returns, every site `q < n_qubits - 1`
+    /// satisfies `Σ_σ m_σ[q]† · m_σ[q] = I` (left-isometry), and
+    /// `‖m_σ[n_qubits - 1]‖²_F = 1`. The represented state has unit
+    /// 2-norm.
+    ///
+    /// At each bond q, the local pair is contracted to `Θ`, SVD'd
+    /// without truncation, and the result split as `U` (becomes the new
+    /// site q, left-canonical) times `S V†` (folded into site q+1).
+    /// Cost: O(N · χ³) (one SVD per bond at full rank).
+    ///
+    /// Use case: long heavily-truncated runs accumulate per-site noise
+    /// in the post-SVD `sqrt(S)`-on-each-side splitting, which
+    /// overflows the env-contraction in [`Self::expectation_z_all`] at
+    /// N ≥ 10⁶ × 50 steps. One canonicalization sweep before
+    /// measurement bounds the env values to O(1).
+    pub fn canonicalize_left_and_normalize(&mut self) -> Result<()> {
+        let n = self.n_qubits;
+        if n < 2 {
+            return Ok(());
+        }
+        for q in 0..n - 1 {
+            let ld = self.sites[q].left_dim;
+            let rd_old = self.sites[q].right_dim;
+            let rows = 2 * ld;
+            let cols = rd_old;
+
+            let mat = Mat::from_fn(rows, cols, |i, j| {
+                let a = i / 2;
+                let sigma = i % 2;
+                let elem = if sigma == 0 {
+                    self.sites[q].m0[a * cols + j]
+                } else {
+                    self.sites[q].m1[a * cols + j]
+                };
+                faer::c64::new(elem.re, elem.im)
+            });
+
+            let svd = mat
+                .thin_svd()
+                .map_err(|_| crate::error::ProjError::SvdFailed(0))?;
+            let u = svd.U();
+            let s = svd.S();
+            let v = svd.V();
+            let actual_chi = s.column_vector().nrows().min(rows).min(cols);
+
+            let mut new_m0 = vec![C::new(0.0, 0.0); ld * actual_chi];
+            let mut new_m1 = vec![C::new(0.0, 0.0); ld * actual_chi];
+            for a in 0..ld {
+                for g in 0..actual_chi {
+                    let u00 = u[(a * 2, g)];
+                    new_m0[a * actual_chi + g] = C::new(u00.re, u00.im);
+                    let u10 = u[(a * 2 + 1, g)];
+                    new_m1[a * actual_chi + g] = C::new(u10.re, u10.im);
+                }
+            }
+
+            // (S V†)[γ, β] = S[γ] · conj(V[β, γ]).
+            let mut sv_dagger = vec![C::new(0.0, 0.0); actual_chi * cols];
+            for g in 0..actual_chi {
+                let s_g = s.column_vector()[g].re;
+                for b in 0..cols {
+                    let v_bg = v[(b, g)];
+                    sv_dagger[g * cols + b] = C::new(s_g * v_bg.re, -s_g * v_bg.im);
+                }
+            }
+
+            self.sites[q] = SiteTensor {
+                m0: new_m0,
+                m1: new_m1,
+                left_dim: ld,
+                right_dim: actual_chi,
+                lambda: None,
+            };
+
+            // Fold S V† into site q+1.
+            let next_left = self.sites[q + 1].left_dim;
+            let next_right = self.sites[q + 1].right_dim;
+            debug_assert_eq!(next_left, cols);
+            let old_m0 = std::mem::take(&mut self.sites[q + 1].m0);
+            let old_m1 = std::mem::take(&mut self.sites[q + 1].m1);
+            let mut new_m0_next = vec![C::new(0.0, 0.0); actual_chi * next_right];
+            let mut new_m1_next = vec![C::new(0.0, 0.0); actual_chi * next_right];
+            for g in 0..actual_chi {
+                for b in 0..next_right {
+                    let mut acc0 = C::new(0.0, 0.0);
+                    let mut acc1 = C::new(0.0, 0.0);
+                    for gp in 0..cols {
+                        let svd_elem = sv_dagger[g * cols + gp];
+                        acc0 += svd_elem * old_m0[gp * next_right + b];
+                        acc1 += svd_elem * old_m1[gp * next_right + b];
+                    }
+                    new_m0_next[g * next_right + b] = acc0;
+                    new_m1_next[g * next_right + b] = acc1;
+                }
+            }
+            self.sites[q + 1].m0 = new_m0_next;
+            self.sites[q + 1].m1 = new_m1_next;
+            self.sites[q + 1].left_dim = actual_chi;
+        }
+
+        // All sites except the last are now left-canonical. The last
+        // site holds the global norm. Read it and divide out.
+        let last = n - 1;
+        let frob_sq: f64 = self.sites[last]
+            .m0
+            .iter()
+            .chain(self.sites[last].m1.iter())
+            .map(|c| c.norm_sqr())
+            .sum();
+        if frob_sq > 0.0 && frob_sq.is_finite() {
+            let inv = 1.0 / frob_sq.sqrt();
+            let inv_c = C::new(inv, 0.0);
+            for c in self.sites[last].m0.iter_mut() {
+                *c *= inv_c;
+            }
+            for c in self.sites[last].m1.iter_mut() {
+                *c *= inv_c;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rescale each site tensor so its Frobenius norm is 1.
+    ///
+    /// Pure global-scalar multiplication of the represented state — the
+    /// state is multiplied by a constant `k = ∏_q (1 / √F_q)` where
+    /// `F_q = ‖m_σ[q]‖²_F`. Expectation values from
+    /// [`Self::expectation_z`] are invariant because both numerator and
+    /// denominator scale by `|k|²`.
+    ///
+    /// Useful after long heavily-truncated runs where the post-SVD
+    /// `sqrt(S)` splitting accumulates magnitudes that overflow f64 in
+    /// the env-contraction. Bounding each site's Frobenius to 1 keeps
+    /// env values O(1) at every step of the contraction.
+    pub fn rescale_sites_to_unit_frobenius(&mut self) {
+        self.sites.par_iter_mut().for_each(|site| {
+            let frob_sq: f64 = site
+                .m0
+                .iter()
+                .chain(site.m1.iter())
+                .map(|c| c.norm_sqr())
+                .sum();
+            if frob_sq > 0.0 && frob_sq.is_finite() {
+                let inv = 1.0 / frob_sq.sqrt();
+                let inv_c = C::new(inv, 0.0);
+                for c in site.m0.iter_mut() {
+                    *c *= inv_c;
+                }
+                for c in site.m1.iter_mut() {
+                    *c *= inv_c;
+                }
+            }
+        });
+    }
+
+    /// Compute `⟨Z_q⟩` for every qubit `q ∈ 0..n_qubits` in a single
+    /// pass.
+    ///
+    /// Pre-computes the full set of left environments and right
+    /// environments once each (O(N · χ⁴) total per environment build),
+    /// then per-site sandwiches a local Z operator against the stored
+    /// envelopes (O(χ⁴) per site, O(N · χ⁴) total). Compared to a naïve
+    /// loop over [`Self::expectation_z`] (O(N² · χ⁴)) this is N×
+    /// faster, which matters at N ≥ 10⁴.
+    ///
+    /// Works for any MPS regardless of canonical form, by the same
+    /// numerator/denominator trick as [`Self::expectation_z`]: the
+    /// denominator is `<ψ|ψ>` (a single scalar after the env build) and
+    /// is divided into the per-site numerator at the end.
+    #[must_use]
+    pub fn expectation_z_all(&self) -> Vec<f64> {
+        let n = self.n_qubits;
+        if n == 0 {
+            return Vec::new();
+        }
+
+        // Left environments: left_envs[q] is the contracted state from
+        // sites 0..q (so left_envs[0] is the 1×1 left-vacuum boundary).
+        // Stored flat as (left_dim of site q)² entries.
+        let mut left_envs: Vec<Vec<C>> = Vec::with_capacity(n + 1);
+        left_envs.push(vec![C::new(1.0, 0.0)]);
+        for site in &self.sites {
+            let prev = left_envs.last().unwrap();
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let mut new_env = vec![C::new(0.0, 0.0); rd * rd];
+            for ap in 0..ld {
+                for a in 0..ld {
+                    let e = prev[ap * ld + a];
+                    if e.re == 0.0 && e.im == 0.0 {
+                        continue;
+                    }
+                    for bp in 0..rd {
+                        let m0_apbp = site.m0[ap * rd + bp].conj();
+                        let m1_apbp = site.m1[ap * rd + bp].conj();
+                        for b in 0..rd {
+                            let m0_ab = site.m0[a * rd + b];
+                            let m1_ab = site.m1[a * rd + b];
+                            new_env[bp * rd + b] += e * (m0_apbp * m0_ab + m1_apbp * m1_ab);
+                        }
+                    }
+                }
+            }
+            left_envs.push(new_env);
+        }
+
+        // Right environments: right_envs[q] is the contracted state
+        // from sites q..n (so right_envs[n] is the 1×1 right-vacuum
+        // boundary). Stored flat as (left_dim of site q)² entries.
+        let mut right_envs: Vec<Vec<C>> = vec![Vec::new(); n + 1];
+        right_envs[n] = vec![C::new(1.0, 0.0)];
+        for q in (0..n).rev() {
+            let site = &self.sites[q];
+            let next = &right_envs[q + 1];
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let mut new_env = vec![C::new(0.0, 0.0); ld * ld];
+            for bp in 0..rd {
+                for b in 0..rd {
+                    let r = next[bp * rd + b];
+                    if r.re == 0.0 && r.im == 0.0 {
+                        continue;
+                    }
+                    for ap in 0..ld {
+                        let m0_apbp = site.m0[ap * rd + bp].conj();
+                        let m1_apbp = site.m1[ap * rd + bp].conj();
+                        for a in 0..ld {
+                            let m0_ab = site.m0[a * rd + b];
+                            let m1_ab = site.m1[a * rd + b];
+                            new_env[ap * ld + a] += r * (m0_apbp * m0_ab + m1_apbp * m1_ab);
+                        }
+                    }
+                }
+            }
+            right_envs[q] = new_env;
+        }
+
+        let norm = left_envs[n][0].re;
+        if norm.abs() < 1e-30 {
+            return vec![0.0; n];
+        }
+
+        // Per-site Z sandwich: parallel over q since each q's contraction
+        // only reads from `self`, `left_envs`, and `right_envs`.
+        (0..n)
+            .into_par_iter()
+            .map(|q| {
+                let site = &self.sites[q];
+                let ld = site.left_dim;
+                let rd = site.right_dim;
+                let l = &left_envs[q];
+                let r = &right_envs[q + 1];
+                let mut z_acc = C::new(0.0, 0.0);
+                for ap in 0..ld {
+                    for a in 0..ld {
+                        let e = l[ap * ld + a];
+                        if e.re == 0.0 && e.im == 0.0 {
+                            continue;
+                        }
+                        for bp in 0..rd {
+                            let m0_apbp = site.m0[ap * rd + bp].conj();
+                            let m1_apbp = site.m1[ap * rd + bp].conj();
+                            for b in 0..rd {
+                                let m0_ab = site.m0[a * rd + b];
+                                let m1_ab = site.m1[a * rd + b];
+                                let weighted = m0_apbp * m0_ab - m1_apbp * m1_ab;
+                                z_acc += e * weighted * r[bp * rd + b];
+                            }
+                        }
+                    }
+                }
+                z_acc.re / norm
+            })
+            .collect()
+    }
+
     /// Contract the full MPS into a dense state vector (for validation).
     /// Only feasible for small n_qubits (≤ ~25).
     #[must_use]
@@ -1099,5 +1378,125 @@ mod tests {
         mps.apply_single(2, ry(0.4));
         let val = mps.expectation_z_string(&[1, 1]);
         assert!((val - 1.0).abs() < 1e-12, "got {val}");
+    }
+    #[test]
+    fn canonicalize_left_and_normalize_preserves_expectation() {
+        let n = 8;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.4), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.6));
+
+        let z_before = mps.expectation_z_all();
+        mps.canonicalize_left_and_normalize().unwrap();
+
+        // Last site now carries the (unit) norm.
+        let last = &mps.sites[n - 1];
+        let frob_sq: f64 = last
+            .m0
+            .iter()
+            .chain(last.m1.iter())
+            .map(|c| c.norm_sqr())
+            .sum();
+        assert!(
+            (frob_sq - 1.0).abs() < 1e-12,
+            "rightmost Frobenius² should be 1 after canonicalize+normalize, got {frob_sq:e}"
+        );
+
+        // Every non-last site should be left-isometric: Σ_σ A†A = I.
+        for q in 0..n - 1 {
+            let site = &mps.sites[q];
+            let ld = site.left_dim;
+            let rd = site.right_dim;
+            let chi = rd; // After SVD with no truncation, right_dim = SVD rank ≤ 2*ld.
+            for gp in 0..chi {
+                for g in 0..chi {
+                    let mut acc = C::new(0.0, 0.0);
+                    for a in 0..ld {
+                        let m0 = site.m0[a * rd + g];
+                        let m1 = site.m1[a * rd + g];
+                        let m0p = site.m0[a * rd + gp].conj();
+                        let m1p = site.m1[a * rd + gp].conj();
+                        acc += m0p * m0 + m1p * m1;
+                    }
+                    let target = if g == gp { 1.0 } else { 0.0 };
+                    let err = (acc.re - target).abs() + acc.im.abs();
+                    assert!(
+                        err < 1e-10,
+                        "site {q} not left-isometric at ({gp},{g}): {acc:?}"
+                    );
+                }
+            }
+        }
+
+        let z_after = mps.expectation_z_all();
+        for q in 0..n {
+            let err = (z_before[q] - z_after[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: before={} after={} err={err:e}",
+                z_before[q],
+                z_after[q]
+            );
+        }
+    }
+
+    /// `rescale_sites_to_unit_frobenius` must leave `⟨Z⟩` invariant —
+    /// it's a pure global-scalar multiplication of the state.
+    #[test]
+    fn rescale_to_unit_frobenius_preserves_expectation() {
+        let n = 8;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.4), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.6));
+
+        let z_before = mps.expectation_z_all();
+        mps.rescale_sites_to_unit_frobenius();
+        let z_after = mps.expectation_z_all();
+
+        for q in 0..n {
+            let err = (z_before[q] - z_after[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: before={} after={} err={err:e}",
+                z_before[q],
+                z_after[q]
+            );
+        }
+    }
+
+    /// `expectation_z_all` must agree with a naïve loop over
+    /// `expectation_z(q)` on a non-trivial entangled state.
+    #[test]
+    fn expectation_z_all_matches_naive_loop() {
+        let n = 10;
+        let mut mps = Mps::new(n);
+        mps.apply_single_all(h());
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.3), 32).unwrap();
+        }
+        mps.apply_single_all(rx(0.7));
+        for q in 0..n - 1 {
+            mps.apply_two_qubit(q, zz(0.5), 32).unwrap();
+        }
+
+        let z_fast = mps.expectation_z_all();
+        let z_naive: Vec<f64> = (0..n).map(|q| mps.expectation_z(q)).collect();
+
+        assert_eq!(z_fast.len(), n);
+        for q in 0..n {
+            let err = (z_fast[q] - z_naive[q]).abs();
+            assert!(
+                err < 1e-12,
+                "q={q}: fast={} naive={} err={err:e}",
+                z_fast[q],
+                z_naive[q]
+            );
+        }
     }
 }

@@ -294,6 +294,56 @@ fn sweep_one_step(sites: &mut [TtnSite], u: usize, v: usize, e: EdgeId) {
     sites[v] = site_v_new;
 }
 
+/// Canonicalise the entire TTN to a fixed `root` vertex via QR sweeps
+/// from leaves toward the root. After the call, every non-root site is
+/// isometric on its root-ward axis and the root site carries the full
+/// non-isometric "bulk" of the state.
+///
+/// Cost: O(N · χ³) for bounded-degree trees — one QR per non-root site,
+/// in reverse-BFS order.
+///
+/// A properly maintained TTN has at most one non-canonical site (the
+/// orthogonality centre) and a single [`move_center`] suffices. At
+/// scale, FP roundoff in repeated SVD/QR drifts the canonical-form
+/// invariant on every site, and a full leaves-to-root sweep restores it
+/// exactly. This is the load-bearing primitive that the TTN equivalent
+/// of `Mps::canonicalize_left_and_normalize` relies on.
+pub fn canonicalize_to(sites: &mut [TtnSite], topology: &Topology, root: usize) {
+    let n = sites.len();
+    debug_assert!(root < n, "root vertex out of range");
+    if n <= 1 {
+        return;
+    }
+
+    // BFS from root to record the parent edge of every non-root vertex.
+    let mut parent: Vec<Option<(usize, EdgeId)>> = vec![None; n];
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    let mut visited = vec![false; n];
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    queue.push_back(root);
+    visited[root] = true;
+    while let Some(v) = queue.pop_front() {
+        order.push(v);
+        for &edge_id in topology.neighbours(v) {
+            let edge = topology.edge(edge_id);
+            let next = edge.other(v);
+            if !visited[next] {
+                visited[next] = true;
+                parent[next] = Some((v, edge_id));
+                queue.push_back(next);
+            }
+        }
+    }
+
+    // Reverse BFS: process leaves first so that by the time we sweep an
+    // internal node, every child has already pushed its R into it.
+    for &v in order.iter().rev() {
+        if let Some((p, e)) = parent[v] {
+            sweep_one_step(sites, v, p, e);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
