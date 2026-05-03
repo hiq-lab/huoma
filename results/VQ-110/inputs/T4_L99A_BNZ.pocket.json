@@ -1,0 +1,316 @@
+{
+  "name": "T4_L99A_BNZ",
+  "apo_pdb": "tests/data/t4_l99a/1L63.pdb",
+  "holo_pdb": "tests/data/t4_l99a/181L.pdb",
+  "ligand_resname": "BNZ",
+  "cutoff_residue_contact": 8.0,
+  "cutoff_lig_pocket": 7.0,
+  "n_total_sites": 12,
+  "pocket_residues": [
+    {
+      "site_id": 0,
+      "residue_seq": 78,
+      "residue_name": "ILE",
+      "coords": [
+        24.382,
+        6.087,
+        11.037
+      ],
+      "min_lig_distance": 5.963668669535557
+    },
+    {
+      "site_id": 1,
+      "residue_seq": 84,
+      "residue_name": "LEU",
+      "coords": [
+        22.043,
+        6.059,
+        6.247
+      ],
+      "min_lig_distance": 4.263223311064062
+    },
+    {
+      "site_id": 2,
+      "residue_seq": 85,
+      "residue_name": "LYS",
+      "coords": [
+        21.143,
+        2.82,
+        7.874
+      ],
+      "min_lig_distance": 6.264287589183627
+    },
+    {
+      "site_id": 3,
+      "residue_seq": 87,
+      "residue_name": "VAL",
+      "coords": [
+        23.203,
+        2.022,
+        2.977
+      ],
+      "min_lig_distance": 4.447027321706041
+    },
+    {
+      "site_id": 4,
+      "residue_seq": 88,
+      "residue_name": "TYR",
+      "coords": [
+        25.37,
+        0.831,
+        5.831
+      ],
+      "min_lig_distance": 4.6572936347196325
+    },
+    {
+      "site_id": 5,
+      "residue_seq": 99,
+      "residue_name": "LEU",
+      "coords": [
+        30.896,
+        5.647,
+        5.329
+      ],
+      "min_lig_distance": 3.752087019246756
+    },
+    {
+      "site_id": 6,
+      "residue_seq": 100,
+      "residue_name": "ILE",
+      "coords": [
+        31.807,
+        5.971,
+        9.023
+      ],
+      "min_lig_distance": 6.173352654757378
+    },
+    {
+      "site_id": 7,
+      "residue_seq": 102,
+      "residue_name": "MET",
+      "coords": [
+        32.552,
+        10.48,
+        5.971
+      ],
+      "min_lig_distance": 6.1939732805364915
+    },
+    {
+      "site_id": 8,
+      "residue_seq": 103,
+      "residue_name": "VAL",
+      "coords": [
+        30.147,
+        10.713,
+        8.907
+      ],
+      "min_lig_distance": 6.018007892982526
+    },
+    {
+      "site_id": 9,
+      "residue_seq": 111,
+      "residue_name": "VAL",
+      "coords": [
+        26.384,
+        12.668,
+        4.46
+      ],
+      "min_lig_distance": 5.583269293165071
+    },
+    {
+      "site_id": 10,
+      "residue_seq": 118,
+      "residue_name": "LEU",
+      "coords": [
+        24.065,
+        6.899,
+        -1.476
+      ],
+      "min_lig_distance": 5.565252015856963
+    }
+  ],
+  "ligand": {
+    "site_id": 11,
+    "resname": "BNZ",
+    "centroid": [
+      26.911333333333335,
+      6.126166666666666,
+      4.178999999999999
+    ],
+    "n_heavy_atoms": 6
+  },
+  "apo_native_contact_edges": [
+    {
+      "a": 0,
+      "b": 1,
+      "distance_a": 5.330647709237595
+    },
+    {
+      "a": 0,
+      "b": 2,
+      "distance_a": 5.582918502002336
+    },
+    {
+      "a": 0,
+      "b": 4,
+      "distance_a": 7.463519009153792
+    },
+    {
+      "a": 0,
+      "b": 6,
+      "distance_a": 7.694171625327834
+    },
+    {
+      "a": 0,
+      "b": 8,
+      "distance_a": 7.692333911109161
+    },
+    {
+      "a": 1,
+      "b": 2,
+      "distance_a": 3.7347355997446456
+    },
+    {
+      "a": 1,
+      "b": 3,
+      "distance_a": 5.323144653304098
+    },
+    {
+      "a": 1,
+      "b": 4,
+      "distance_a": 6.210794554644358
+    },
+    {
+      "a": 2,
+      "b": 3,
+      "distance_a": 5.372244689140657
+    },
+    {
+      "a": 2,
+      "b": 4,
+      "distance_a": 5.098774264467883
+    },
+    {
+      "a": 3,
+      "b": 4,
+      "distance_a": 3.7761999417403747
+    },
+    {
+      "a": 3,
+      "b": 10,
+      "distance_a": 6.660133782440109
+    },
+    {
+      "a": 4,
+      "b": 5,
+      "distance_a": 7.34728085756901
+    },
+    {
+      "a": 5,
+      "b": 6,
+      "distance_a": 3.8184464118277206
+    },
+    {
+      "a": 5,
+      "b": 7,
+      "distance_a": 5.149018255939669
+    },
+    {
+      "a": 5,
+      "b": 8,
+      "distance_a": 6.24719465040109
+    },
+    {
+      "a": 6,
+      "b": 7,
+      "distance_a": 5.49552636241516
+    },
+    {
+      "a": 6,
+      "b": 8,
+      "distance_a": 5.0254969903483175
+    },
+    {
+      "a": 7,
+      "b": 8,
+      "distance_a": 3.802421596824845
+    },
+    {
+      "a": 7,
+      "b": 9,
+      "distance_a": 6.716746906055043
+    },
+    {
+      "a": 8,
+      "b": 9,
+      "distance_a": 6.144754104111896
+    }
+  ],
+  "lig_pocket_edges": [
+    {
+      "a": 0,
+      "b": 11,
+      "distance_a": 5.963668669535557
+    },
+    {
+      "a": 1,
+      "b": 11,
+      "distance_a": 4.263223311064062
+    },
+    {
+      "a": 2,
+      "b": 11,
+      "distance_a": 6.264287589183627
+    },
+    {
+      "a": 3,
+      "b": 11,
+      "distance_a": 4.447027321706041
+    },
+    {
+      "a": 4,
+      "b": 11,
+      "distance_a": 4.6572936347196325
+    },
+    {
+      "a": 5,
+      "b": 11,
+      "distance_a": 3.752087019246756
+    },
+    {
+      "a": 6,
+      "b": 11,
+      "distance_a": 6.173352654757378
+    },
+    {
+      "a": 7,
+      "b": 11,
+      "distance_a": 6.1939732805364915
+    },
+    {
+      "a": 8,
+      "b": 11,
+      "distance_a": 6.018007892982526
+    },
+    {
+      "a": 9,
+      "b": 11,
+      "distance_a": 5.583269293165071
+    },
+    {
+      "a": 10,
+      "b": 11,
+      "distance_a": 5.565252015856963
+    }
+  ],
+  "pocket_meta": {
+    "pocket_centroid": [
+      26.54472727272727,
+      6.381545454545455,
+      6.016363636363636
+    ],
+    "ligand_pocket_distance": 1.8909054606729927,
+    "n_apo_edges": 21,
+    "n_lig_edges": 11
+  }
+}

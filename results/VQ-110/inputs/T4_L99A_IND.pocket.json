@@ -1,0 +1,373 @@
+{
+  "name": "T4_L99A_IND",
+  "apo_pdb": "tests/data/t4_l99a/1L63.pdb",
+  "holo_pdb": "tests/data/t4_l99a/185L.pdb",
+  "ligand_resname": "IND",
+  "cutoff_residue_contact": 8.0,
+  "cutoff_lig_pocket": 7.0,
+  "n_total_sites": 14,
+  "pocket_residues": [
+    {
+      "site_id": 0,
+      "residue_seq": 78,
+      "residue_name": "ILE",
+      "coords": [
+        24.382,
+        6.087,
+        11.037
+      ],
+      "min_lig_distance": 5.32583289260938
+    },
+    {
+      "site_id": 1,
+      "residue_seq": 84,
+      "residue_name": "LEU",
+      "coords": [
+        22.043,
+        6.059,
+        6.247
+      ],
+      "min_lig_distance": 4.023824176079268
+    },
+    {
+      "site_id": 2,
+      "residue_seq": 85,
+      "residue_name": "LYS",
+      "coords": [
+        21.143,
+        2.82,
+        7.874
+      ],
+      "min_lig_distance": 5.947670720542622
+    },
+    {
+      "site_id": 3,
+      "residue_seq": 87,
+      "residue_name": "VAL",
+      "coords": [
+        23.203,
+        2.022,
+        2.977
+      ],
+      "min_lig_distance": 4.521077415837954
+    },
+    {
+      "site_id": 4,
+      "residue_seq": 88,
+      "residue_name": "TYR",
+      "coords": [
+        25.37,
+        0.831,
+        5.831
+      ],
+      "min_lig_distance": 4.564052913803695
+    },
+    {
+      "site_id": 5,
+      "residue_seq": 98,
+      "residue_name": "ALA",
+      "coords": [
+        34.401,
+        4.465,
+        4.402
+      ],
+      "min_lig_distance": 6.634714387221203
+    },
+    {
+      "site_id": 6,
+      "residue_seq": 99,
+      "residue_name": "LEU",
+      "coords": [
+        30.896,
+        5.647,
+        5.329
+      ],
+      "min_lig_distance": 3.5677305111232833
+    },
+    {
+      "site_id": 7,
+      "residue_seq": 100,
+      "residue_name": "ILE",
+      "coords": [
+        31.807,
+        5.971,
+        9.023
+      ],
+      "min_lig_distance": 5.6431786255620136
+    },
+    {
+      "site_id": 8,
+      "residue_seq": 102,
+      "residue_name": "MET",
+      "coords": [
+        32.552,
+        10.48,
+        5.971
+      ],
+      "min_lig_distance": 5.786868237656703
+    },
+    {
+      "site_id": 9,
+      "residue_seq": 103,
+      "residue_name": "VAL",
+      "coords": [
+        30.147,
+        10.713,
+        8.907
+      ],
+      "min_lig_distance": 5.457045446026631
+    },
+    {
+      "site_id": 10,
+      "residue_seq": 111,
+      "residue_name": "VAL",
+      "coords": [
+        26.384,
+        12.668,
+        4.46
+      ],
+      "min_lig_distance": 5.6093466642738345
+    },
+    {
+      "site_id": 11,
+      "residue_seq": 118,
+      "residue_name": "LEU",
+      "coords": [
+        24.065,
+        6.899,
+        -1.476
+      ],
+      "min_lig_distance": 5.271267494635422
+    },
+    {
+      "site_id": 12,
+      "residue_seq": 121,
+      "residue_name": "LEU",
+      "coords": [
+        26.414,
+        2.778,
+        -3.254
+      ],
+      "min_lig_distance": 6.3411944458437794
+    }
+  ],
+  "ligand": {
+    "site_id": 13,
+    "resname": "IND",
+    "centroid": [
+      27.295888888888886,
+      6.302333333333333,
+      4.161444444444444
+    ],
+    "n_heavy_atoms": 9
+  },
+  "apo_native_contact_edges": [
+    {
+      "a": 0,
+      "b": 1,
+      "distance_a": 5.330647709237595
+    },
+    {
+      "a": 0,
+      "b": 2,
+      "distance_a": 5.582918502002336
+    },
+    {
+      "a": 0,
+      "b": 4,
+      "distance_a": 7.463519009153792
+    },
+    {
+      "a": 0,
+      "b": 7,
+      "distance_a": 7.694171625327834
+    },
+    {
+      "a": 0,
+      "b": 9,
+      "distance_a": 7.692333911109161
+    },
+    {
+      "a": 1,
+      "b": 2,
+      "distance_a": 3.7347355997446456
+    },
+    {
+      "a": 1,
+      "b": 3,
+      "distance_a": 5.323144653304098
+    },
+    {
+      "a": 1,
+      "b": 4,
+      "distance_a": 6.210794554644358
+    },
+    {
+      "a": 2,
+      "b": 3,
+      "distance_a": 5.372244689140657
+    },
+    {
+      "a": 2,
+      "b": 4,
+      "distance_a": 5.098774264467883
+    },
+    {
+      "a": 3,
+      "b": 4,
+      "distance_a": 3.7761999417403747
+    },
+    {
+      "a": 3,
+      "b": 11,
+      "distance_a": 6.660133782440109
+    },
+    {
+      "a": 3,
+      "b": 12,
+      "distance_a": 7.050348785698479
+    },
+    {
+      "a": 4,
+      "b": 6,
+      "distance_a": 7.34728085756901
+    },
+    {
+      "a": 5,
+      "b": 6,
+      "distance_a": 3.8133289918390227
+    },
+    {
+      "a": 5,
+      "b": 7,
+      "distance_a": 5.509129967608318
+    },
+    {
+      "a": 5,
+      "b": 8,
+      "distance_a": 6.485428821596921
+    },
+    {
+      "a": 6,
+      "b": 7,
+      "distance_a": 3.8184464118277206
+    },
+    {
+      "a": 6,
+      "b": 8,
+      "distance_a": 5.149018255939669
+    },
+    {
+      "a": 6,
+      "b": 9,
+      "distance_a": 6.24719465040109
+    },
+    {
+      "a": 7,
+      "b": 8,
+      "distance_a": 5.49552636241516
+    },
+    {
+      "a": 7,
+      "b": 9,
+      "distance_a": 5.0254969903483175
+    },
+    {
+      "a": 8,
+      "b": 9,
+      "distance_a": 3.802421596824845
+    },
+    {
+      "a": 8,
+      "b": 10,
+      "distance_a": 6.716746906055043
+    },
+    {
+      "a": 9,
+      "b": 10,
+      "distance_a": 6.144754104111896
+    },
+    {
+      "a": 11,
+      "b": 12,
+      "distance_a": 5.065740419721485
+    }
+  ],
+  "lig_pocket_edges": [
+    {
+      "a": 0,
+      "b": 13,
+      "distance_a": 5.32583289260938
+    },
+    {
+      "a": 1,
+      "b": 13,
+      "distance_a": 4.023824176079268
+    },
+    {
+      "a": 2,
+      "b": 13,
+      "distance_a": 5.947670720542622
+    },
+    {
+      "a": 3,
+      "b": 13,
+      "distance_a": 4.521077415837954
+    },
+    {
+      "a": 4,
+      "b": 13,
+      "distance_a": 4.564052913803695
+    },
+    {
+      "a": 5,
+      "b": 13,
+      "distance_a": 6.634714387221203
+    },
+    {
+      "a": 6,
+      "b": 13,
+      "distance_a": 3.5677305111232833
+    },
+    {
+      "a": 7,
+      "b": 13,
+      "distance_a": 5.6431786255620136
+    },
+    {
+      "a": 8,
+      "b": 13,
+      "distance_a": 5.786868237656703
+    },
+    {
+      "a": 9,
+      "b": 13,
+      "distance_a": 5.457045446026631
+    },
+    {
+      "a": 10,
+      "b": 13,
+      "distance_a": 5.6093466642738345
+    },
+    {
+      "a": 11,
+      "b": 13,
+      "distance_a": 5.271267494635422
+    },
+    {
+      "a": 12,
+      "b": 13,
+      "distance_a": 6.3411944458437794
+    }
+  ],
+  "pocket_meta": {
+    "pocket_centroid": [
+      27.138999999999996,
+      5.956923076923077,
+      5.179076923076922
+    ],
+    "ligand_pocket_distance": 1.08604706631797,
+    "n_apo_edges": 26,
+    "n_lig_edges": 13
+  }
+}
