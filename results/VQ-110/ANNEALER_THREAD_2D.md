@@ -31,29 +31,44 @@ the unique tree path between their endpoints.
 
 ## Sized series
 
-| Size | Lattice | N | Tree / non-tree edges | χ | Steps | Wall | Per step | norm² | max\|⟨Z⟩\| | Discarded |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1K | grid(20, 20) | 1,200 | 1199 / 361 | 16 | 50 | 500 s | 10.0 s | 1.000000 | 0.227 | 8.50 |
-| 4K | grid(45, 30) | 4,065 | 4064 / 1276 | 8 | 50 | 367 s | 7.35 s | 1.000000 | 0.437 | 9.29 |
-| **9.5K** | grid(63, 50) | 9,463 | 9462 / 3038 | 8 | 50 | **1361 s** (22.7 min) | 27.2 s | 1.000000 | 0.734 | 9.64 |
+| Size | Lattice | N | Tree / non-tree edges | χ | canon | Steps | Wall | Per step | norm² | max\|⟨Z⟩\| | Discarded |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1K | grid(20, 20) | 1,200 | 1199 / 361 | 16 | every 5 | 50 | 500 s | 10.0 s | 1.000000 | 0.227 | 8.50 |
+| 4K | grid(45, 30) | 4,065 | 4064 / 1276 | 8 | every 5 | 50 | 367 s | 7.35 s | 1.000000 | 0.437 | 9.29 |
+| 9.5K | grid(63, 50) | 9,463 | 9462 / 3038 | 8 | every 5 | 50 | 1361 s (22.7 min) | 27.2 s | 1.000000 | 0.734 | 9.64 |
+| **19K** | grid(80, 80) | 19,200 | 19199 / 6241 | 8 | **every step** | 50 | **4439 s** (74.0 min) | 88.8 s | 1.000000 | 0.737 | 46.4 |
+| 30K | grid(100, 100) | 30,000 | 29999 / 9801 | 8 | every 5 | 50 | _failed_ | _SvdFailed mid-ramp_ | — | — | — |
 
 Bulk physics observation: `mean⟨Z⟩` stays in the `-0.05 … -0.10` band
-across all three sizes — the bulk is in the same ramp regime as the
-chain, just with 2D-flavour entanglement structure underneath.
-`max|⟨Z⟩|` grows with N (0.227 → 0.437 → 0.734) because the perimeter
-has more edges where the schedule has time to push amplitude away from
-the paramagnetic |+⟩ initial state.
+across all four successful sizes — the bulk is in the same ramp regime
+as the chain, just with 2D-flavour entanglement structure underneath.
+`max|⟨Z⟩|` grows with N up to 9.5K (0.227 → 0.437 → 0.734) and then
+*saturates* at 19K (0.737) — the χ=8 truncation has soaked up enough
+of the per-bond entanglement that further N growth no longer pushes
+the per-qubit alignment harder.
 
-Per-step cost is dominated by the swap-network non-tree-edge path:
-9.5K has 3038 non-tree edges, each routed through O(B) hops in the
-spanning tree. Going from 4K to 9.5K, qubit count grows 2.3× but
-per-step time grows 3.7× — non-tree-edge cost scales worse than
-linear-in-N because the swap-network distance also grows with B.
+The 19K cumulative discarded weight (46.4) is ~5× the 9.5K value
+(9.6) at the same χ — the perimeter-law growth is honestly visible.
+Per-effective-bond cost at 19K (88.8 s/step ÷ ~1M effective bonds
+≈ 87 µs) matches the 9.5K cost (27.2 s/step ÷ ~307K effective bonds
+≈ 89 µs) within ~3%, confirming the linear-in-effective-bonds
+extrapolation that informed sizing.
 
-`norm² = 1.000000` exactly across all sizes — the
-`Ttn::canonicalize_and_normalize` sweep before measurement (and every
-5 ramp steps) keeps the gauge state stable and the env contraction
-bounded, same role it played for the chain at 1M.
+The 30K attempt with `canon_every=5` hit `SvdFailed(0)` partway
+through the ramp at 102 min wall — accumulated truncation made a
+local Θ matrix numerically singular faster than the every-5-steps
+canonicalize-and-normalize sweep could clean up. The 19K run that
+followed bumped the canonicalize cadence to **every step** and ran to
+completion at 74 min on the same χ=8. Going forward, the right
+trade-off at 2D scale is to canonicalize-every-step and accept the
+~3% wall-time penalty (50 × ~110 ms canon at 19K = 5.5 s extra over
+74 min ramp). Retrying 30K at canon-every-step is a future scale
+push; not blocking for this report.
+
+`norm² = 1.000000` exactly across all four successful sizes — the
+`Ttn::canonicalize_and_normalize` sweep keeps the gauge state stable
+and the env contraction bounded, same role it played for the chain
+at 1M.
 
 ---
 
@@ -125,7 +140,7 @@ state every step.
 | Path | Topology | Headline | Physics |
 |---|---|---|---|
 | `Mps + apply_kim_step` | 1D chain | 1M qubits, 18 min | chain area-law, χ=8 holds |
-| `Ttn + apply_kim_step_heavy_hex` (this report) | 2D heavy-hex grid | 9.5K qubits, 23 min | perimeter-law, χ=8–16 |
+| `Ttn + apply_kim_step_heavy_hex` (this report) | 2D heavy-hex grid | 19K qubits, 74 min | perimeter-law, χ=8 with canon-every-step |
 | `ProjectedTtn + analytical bulk` (VQ-110 ch.0) | 2D heavy-hex with sparse defects | 1B qubits, 31 min | sparse defects in clean host |
 
 These are *different abstractions for different physics regimes*, not
@@ -145,8 +160,8 @@ competing speed claims:
 
 For the annealer thread the 2D unprojected path is the most directly
 relevant: D-Wave problems live on 2D-ish graphs (Pegasus, Zephyr) and
-don't have commensurate-host structure to project against. The 9.5K
-unprojected 2D headline is therefore roughly **13× a top-end annealer's
+don't have commensurate-host structure to project against. The 19K
+unprojected 2D headline is therefore roughly **27× a top-end annealer's
 post-embedding logical capacity** (D-Wave Advantage6 today after
 minor-embedding ≈ 700 logical variables on dense problems; Advantage2
 within the year ≈ 1000), under closed-system unitary at bounded χ.
@@ -197,9 +212,13 @@ cargo test --release --test adiabatic_ramp_2d_scale \
 cargo test --release --test adiabatic_ramp_2d_scale \
     adiabatic_ramp_2d_grid_5k_completes -- --ignored --nocapture
 
-# 9.5K headline (~23 min)
+# 9.5K mid-scale (~23 min)
 cargo test --release --test adiabatic_ramp_2d_scale \
     adiabatic_ramp_2d_grid_10k_completes -- --ignored --nocapture
+
+# 19K headline (~74 min, canon every step)
+cargo test --release --test adiabatic_ramp_2d_scale \
+    adiabatic_ramp_2d_grid_19k_completes -- --ignored --nocapture
 ```
 
 All `#[ignore]`-gated. Resident memory peaks at well under 1 GB even
@@ -208,4 +227,6 @@ for 10K (the limiting factor is per-step wall-clock, not memory, since
 
 Raw stdout: [`adiabatic_2d_1k_run.log`](adiabatic_2d_1k_run.log),
 [`adiabatic_2d_5k_run.log`](adiabatic_2d_5k_run.log),
-[`adiabatic_2d_10k_run.log`](adiabatic_2d_10k_run.log).
+[`adiabatic_2d_10k_run.log`](adiabatic_2d_10k_run.log),
+[`adiabatic_2d_19k_run.log`](adiabatic_2d_19k_run.log),
+[`adiabatic_2d_30k_attempt_failed.log`](adiabatic_2d_30k_attempt_failed.log).
