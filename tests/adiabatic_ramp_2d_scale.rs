@@ -249,11 +249,14 @@ fn adiabatic_ramp_2d_grid_19k_completes() {
     run_adiabatic_grid(80, 80, 50, 8, 0.1, 1, "2D-19K").unwrap();
 }
 
-/// 30K stretch — failed mid-ramp at canon_every=5 (SvdFailed at ~step
-/// 30, 102 min wall). Kept here with canon_every=1 as a future retry
-/// candidate; not the current headline.
+/// 30K headline. grid(100, 100) = 30000 qubits, 29999 tree edges,
+/// 9801 non-tree edges. χ=8, canon_every=1 (every step). Lands in
+/// 149.5 min wall, norm² = 1.000000 exact, max|⟨Z⟩| = 0.797.
+/// First attempt with canon_every=5 hit SvdFailed mid-ramp at 102
+/// min — the canonicalize-every-step cadence is load-bearing at this
+/// scale.
 #[test]
-#[ignore = "30K 2D adiabatic ramp, retry candidate after 19K succeeds"]
+#[ignore = "30K 2D adiabatic ramp, ~150 min, canon every step"]
 fn adiabatic_ramp_2d_grid_30k_completes() {
     run_adiabatic_grid(100, 100, 50, 8, 0.1, 1, "2D-30K").unwrap();
 }
