@@ -384,6 +384,51 @@ impl Ttn {
         }
     }
 
+    /// Canonicalise the TTN gauge and normalise the orthogonality centre to
+    /// unit Frobenius norm. After the call, [`Self::norm_squared`] returns
+    /// `1.0` exactly (modulo FP), the centre sits at vertex 0, and every
+    /// other site is isometric on its root-ward axis.
+    ///
+    /// Mirrors [`crate::mps::Mps::canonicalize_left_and_normalize`] for the
+    /// tree case. The 2-norm of the state is preserved up to the global
+    /// rescaling — observables that are gauge-invariant ratios (like
+    /// `expectation_z`) are unchanged, since both numerator and denominator
+    /// envelopes pick up the same factor.
+    ///
+    /// This is the load-bearing stability primitive at scale: without
+    /// periodic recanonicalisation, FP drift in repeated SVD/QR causes the
+    /// centre's Frobenius norm to drift, and at million-variable scale env
+    /// contractions overflow `f64`. The 1M-qubit chain run in
+    /// `tests/adiabatic_ramp_scale.rs` proves both directions: needed at
+    /// 10⁵+ and stable at 10⁶ when applied every K ramp steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SvdFailed(0)` if the centre tensor has zero Frobenius norm
+    /// — pathological in normal operation, kept defensively because the
+    /// alternative would be a silent NaN propagation.
+    pub fn canonicalize_and_normalize(&mut self) -> Result<()> {
+        match &mut self.backend {
+            Backend::Linear(mps) => mps.canonicalize_left_and_normalize(),
+            Backend::Tree { sites, center, .. } => {
+                let root = 0_usize;
+                gauge::canonicalize_to(sites, &self.topology, root);
+                *center = root;
+
+                let frob_sq: f64 = sites[root].data.iter().map(|c| c.norm_sqr()).sum();
+                let frob = frob_sq.sqrt();
+                if frob == 0.0 || !frob.is_finite() {
+                    return Err(crate::error::ProjError::SvdFailed(0));
+                }
+                let inv = 1.0 / frob;
+                for c in sites[root].data.iter_mut() {
+                    *c = C::new(c.re * inv, c.im * inv);
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Test-only access to the full dense statevector for small trees
     /// (ordered with qubit 0 as the most significant bit).
     #[cfg(test)]
@@ -1300,6 +1345,100 @@ mod tests {
                 second[q]
             );
         }
+    }
+
+    /// Drives a Y-junction through enough gates that the OC has bounced
+    /// around, then asserts canonicalize_and_normalize:
+    ///   (a) preserves every ⟨Z⟩ to QR-roundoff,
+    ///   (b) leaves `norm_squared() == 1.0` to FP precision,
+    ///   (c) makes the root site (vertex 0) carry unit Frobenius norm.
+    #[test]
+    fn canonicalize_and_normalize_preserves_expectation_and_yields_unit_norm() {
+        let topology = y_junction();
+        let n = topology.n_qubits();
+        let mut ttn = Ttn::new(topology.clone());
+
+        // Stir up the state with a non-trivial circuit that bounces the OC
+        // around — same pattern as assert_ttn_matches_dense.
+        for q in 0..n {
+            ttn.apply_single(q, hadamard());
+            ttn.apply_single(q, rx(0.3 + 0.17 * q as f64));
+            ttn.apply_single(q, rz(0.42 - 0.11 * q as f64));
+        }
+        for _ in 0..2 {
+            for eid in 0..topology.n_edges() {
+                ttn.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 64).unwrap();
+                ttn.apply_two_qubit_on_edge(EdgeId(eid), zz(0.47), 64).unwrap();
+            }
+        }
+
+        let z_before: Vec<f64> = (0..n).map(|q| ttn.expectation_z(q)).collect();
+
+        ttn.canonicalize_and_normalize().unwrap();
+
+        // (a) Right after canonicalize, before any expectation_z call moves
+        // the OC: norm² = 1 exactly, OC sits at root, root has unit Frob².
+        let nsq = ttn.norm_squared();
+        assert!(
+            (nsq - 1.0).abs() < 1e-12,
+            "norm² = {nsq}, expected 1.0 within FP roundoff"
+        );
+        if let Backend::Tree { sites, center, .. } = &ttn.backend {
+            assert_eq!(*center, 0, "OC should sit at root after canonicalize");
+            let frob_sq: f64 = sites[0].data.iter().map(|c| c.norm_sqr()).sum();
+            assert!(
+                (frob_sq - 1.0).abs() < 1e-12,
+                "root Frob² = {frob_sq}, expected 1.0"
+            );
+        } else {
+            panic!("y_junction should use Backend::Tree");
+        }
+
+        // (b) ⟨Z⟩ values are gauge-invariant and survive the canonicalize.
+        let z_after: Vec<f64> = (0..n).map(|q| ttn.expectation_z(q)).collect();
+        for q in 0..n {
+            assert!(
+                (z_before[q] - z_after[q]).abs() < 1e-11,
+                "q={q}: ⟨Z⟩ drifted across canonicalize: before={} after={} diff={:e}",
+                z_before[q],
+                z_after[q],
+                (z_before[q] - z_after[q]).abs()
+            );
+        }
+    }
+
+    /// Mps-backed chain delegates correctly. The chain backend has its own
+    /// `canonicalize_left_and_normalize` that this method must call through
+    /// to without breaking observables.
+    #[test]
+    fn canonicalize_and_normalize_on_chain_delegates_to_mps() {
+        let topology = Topology::linear_chain(8);
+        let mut ttn = Ttn::new(topology.clone());
+        for q in 0..8 {
+            ttn.apply_single(q, hadamard());
+            ttn.apply_single(q, rz(0.31 + 0.07 * q as f64));
+        }
+        for eid in 0..topology.n_edges() {
+            ttn.apply_two_qubit_on_edge(EdgeId(eid), cnot(), 64).unwrap();
+            ttn.apply_two_qubit_on_edge(EdgeId(eid), zz(0.29), 64).unwrap();
+        }
+
+        let z_before: Vec<f64> = (0..8).map(|q| ttn.expectation_z(q)).collect();
+        ttn.canonicalize_and_normalize().unwrap();
+        let z_after: Vec<f64> = (0..8).map(|q| ttn.expectation_z(q)).collect();
+
+        for q in 0..8 {
+            assert!(
+                (z_before[q] - z_after[q]).abs() < 1e-11,
+                "q={q}: ⟨Z⟩ drifted across chain canonicalize"
+            );
+        }
+
+        let nsq = ttn.norm_squared();
+        assert!(
+            (nsq - 1.0).abs() < 1e-12,
+            "chain norm² = {nsq}, expected 1.0"
+        );
     }
 
     // ─── D.3 small-heavy-hex KIM validation ────────────────────────────
