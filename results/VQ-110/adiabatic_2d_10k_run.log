@@ -1,0 +1,15 @@
+running 1 test
+[2D-10K] HeavyHexLayout::grid(63, 50): 9463 qubits, 9462 tree edges, 3038 non-tree edges (548.75ms)
+[2D-10K] Ttn::new: 572.083µs
+[2D-10K] |+⟩^⊗N preparation: 33.25µs
+test adiabatic_ramp_2d_grid_10k_completes has been running for over 60 seconds
+[2D-10K] canonicalize: every 5 steps + after last, total = 392.90ms
+[2D-10K] 50 ramp steps at χ=8: 1359.76s (27.20s/step)
+[2D-10K] expectation_z all (9463): 111.37ms, max|⟨Z⟩|=0.734, mean|⟨Z⟩|=0.451, mean⟨Z⟩=-0.102
+
+[2D-10K] DONE: 9463 qubits, χ=8, 50 steps, total = 1360.43s, norm² = 1.000000 (in 0.00ns), discarded = 9.6430e0
+
+test adiabatic_ramp_2d_grid_10k_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1360.44s
+
