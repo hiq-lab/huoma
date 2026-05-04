@@ -1,0 +1,60 @@
+   Compiling huoma v1.0.0 (/Users/danielhinderink/Projects/HIQ/huoma)
+warning: variable does not need to be mutable
+   --> src/ttn/projected.rs:111:13
+    |
+111 |         let mut island_states: Vec<IslandState> = islands
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `boundary_tensors` is never read
+  --> src/ttn/projected.rs:46:5
+   |
+43 | struct IslandState {
+   |        ----------- field in this struct
+...
+46 |     boundary_tensors: Vec<BoundaryTensor>,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `partition` is never read
+  --> src/ttn/projected.rs:58:5
+   |
+54 | pub struct ProjectedTtn {
+   |            ------------ field in this struct
+...
+58 |     partition: TreePartition,
+   |     ^^^^^^^^^
+
+warning: `huoma` (lib) generated 3 warnings (run `cargo fix --lib -p huoma` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 7.52s
+     Running tests/adiabatic_ramp_2d_scale.rs (target/release/deps/adiabatic_ramp_2d_scale-70286e09f3265f2e)
+
+running 1 test
+[2D-30K] HeavyHexLayout::grid(100, 100): 30000 qubits, 29999 tree edges, 9801 non-tree edges (5.59s)
+[2D-30K] Ttn::new: 1.844875ms
+[2D-30K] |+⟩^⊗N preparation: 106.791µs
+test adiabatic_ramp_2d_grid_30k_completes has been running for over 60 seconds
+[2D-30K] step 5/50 (s=0.090): elapsed = 876.71s
+[2D-30K] step 10/50 (s=0.190): elapsed = 1764.62s
+[2D-30K] step 15/50 (s=0.290): elapsed = 2642.88s
+[2D-30K] step 20/50 (s=0.390): elapsed = 3546.25s
+[2D-30K] step 25/50 (s=0.490): elapsed = 4464.45s
+[2D-30K] step 30/50 (s=0.590): elapsed = 5352.82s
+[2D-30K] step 35/50 (s=0.690): elapsed = 6250.86s
+[2D-30K] step 40/50 (s=0.790): elapsed = 7141.95s
+[2D-30K] step 45/50 (s=0.890): elapsed = 8042.02s
+[2D-30K] step 50/50 (s=0.990): elapsed = 8961.13s
+[2D-30K] canonicalize: every 1 steps + after last, total = 6.54s
+[2D-30K] 50 ramp steps at χ=8: 8961.13s (179.22s/step)
+[2D-30K] expectation_z all (30000): 501.53ms, max|⟨Z⟩|=0.797, mean|⟨Z⟩|=0.485, mean⟨Z⟩=-0.104
+
+[2D-30K] DONE: 30000 qubits, χ=8, 50 steps, total = 8967.22s, norm² = 1.000000 (in 42.00ns), discarded = 4.6979e1
+
+test adiabatic_ramp_2d_grid_30k_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 8967.27s
+

@@ -1,0 +1,59 @@
+warning: variable does not need to be mutable
+   --> src/ttn/projected.rs:111:13
+    |
+111 |         let mut island_states: Vec<IslandState> = islands
+    |             ----^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `boundary_tensors` is never read
+  --> src/ttn/projected.rs:46:5
+   |
+43 | struct IslandState {
+   |        ----------- field in this struct
+...
+46 |     boundary_tensors: Vec<BoundaryTensor>,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `partition` is never read
+  --> src/ttn/projected.rs:58:5
+   |
+54 | pub struct ProjectedTtn {
+   |            ------------ field in this struct
+...
+58 |     partition: TreePartition,
+   |     ^^^^^^^^^
+
+warning: `huoma` (lib) generated 3 warnings (run `cargo fix --lib -p huoma` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.04s
+     Running tests/adiabatic_ramp_2d_scale.rs (target/release/deps/adiabatic_ramp_2d_scale-70286e09f3265f2e)
+
+running 1 test
+[2D-19K] HeavyHexLayout::grid(80, 80): 19200 qubits, 19199 tree edges, 6241 non-tree edges (2.29s)
+[2D-19K] Ttn::new: 1.146125ms
+[2D-19K] |+⟩^⊗N preparation: 59.583µs
+test adiabatic_ramp_2d_grid_19k_completes has been running for over 60 seconds
+[2D-19K] step 5/50 (s=0.090): elapsed = 415.92s
+[2D-19K] step 10/50 (s=0.190): elapsed = 856.95s
+[2D-19K] step 15/50 (s=0.290): elapsed = 1330.21s
+[2D-19K] step 20/50 (s=0.390): elapsed = 1799.43s
+[2D-19K] step 25/50 (s=0.490): elapsed = 2237.21s
+[2D-19K] step 30/50 (s=0.590): elapsed = 2676.03s
+[2D-19K] step 35/50 (s=0.690): elapsed = 3116.18s
+[2D-19K] step 40/50 (s=0.790): elapsed = 3556.86s
+[2D-19K] step 45/50 (s=0.890): elapsed = 3998.08s
+[2D-19K] step 50/50 (s=0.990): elapsed = 4436.37s
+[2D-19K] canonicalize: every 1 steps + after last, total = 4.12s
+[2D-19K] 50 ramp steps at χ=8: 4436.37s (88.73s/step)
+[2D-19K] expectation_z all (19200): 270.34ms, max|⟨Z⟩|=0.737, mean|⟨Z⟩|=0.467, mean⟨Z⟩=-0.101
+
+[2D-19K] DONE: 19200 qubits, χ=8, 50 steps, total = 4438.93s, norm² = 1.000000 (in 0.00ns), discarded = 4.6437e1
+
+test adiabatic_ramp_2d_grid_19k_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 4438.95s
+

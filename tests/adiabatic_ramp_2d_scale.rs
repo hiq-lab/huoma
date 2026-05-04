@@ -86,6 +86,7 @@ fn run_adiabatic_grid(
 
     let mut t_canon_total = std::time::Duration::ZERO;
     let ramp_start = std::time::Instant::now();
+    let progress_every: usize = 5;
     for k in 0..n_steps {
         let s = (k as f64 + 0.5) / n_steps as f64;
         let params = KimParams {
@@ -99,6 +100,13 @@ fn run_adiabatic_grid(
             let canon_start = std::time::Instant::now();
             ttn.canonicalize_and_normalize()?;
             t_canon_total += canon_start.elapsed();
+        }
+        if (k + 1) % progress_every == 0 || k + 1 == n_steps {
+            eprintln!(
+                "[{tag}] step {}/{n_steps} (s={s:.3}): elapsed = {:.2?}",
+                k + 1,
+                ramp_start.elapsed()
+            );
         }
     }
     let t_ramp = ramp_start.elapsed();
@@ -228,4 +236,27 @@ fn adiabatic_ramp_2d_grid_5k_completes() {
 #[ignore = "9.5K 2D adiabatic ramp, ~23 min"]
 fn adiabatic_ramp_2d_grid_10k_completes() {
     run_adiabatic_grid(63, 50, 50, 8, 0.1, 5, "2D-9.5K").unwrap();
+}
+
+/// 19K stretch headline. grid(80, 80) = 19200 qubits, 19199 tree
+/// edges, 6241 non-tree edges. χ=8, canon_every=1 (every step) since
+/// at 30K the every-5-steps canon was insufficient — accumulated
+/// truncation made a local Θ matrix numerically singular mid-ramp.
+/// Projected ~75 min based on per-effective-bond cost at 9.5K.
+#[test]
+#[ignore = "19K 2D adiabatic ramp, ~75 min"]
+fn adiabatic_ramp_2d_grid_19k_completes() {
+    run_adiabatic_grid(80, 80, 50, 8, 0.1, 1, "2D-19K").unwrap();
+}
+
+/// 30K headline. grid(100, 100) = 30000 qubits, 29999 tree edges,
+/// 9801 non-tree edges. χ=8, canon_every=1 (every step). Lands in
+/// 149.5 min wall, norm² = 1.000000 exact, max|⟨Z⟩| = 0.797.
+/// First attempt with canon_every=5 hit SvdFailed mid-ramp at 102
+/// min — the canonicalize-every-step cadence is load-bearing at this
+/// scale.
+#[test]
+#[ignore = "30K 2D adiabatic ramp, ~150 min, canon every step"]
+fn adiabatic_ramp_2d_grid_30k_completes() {
+    run_adiabatic_grid(100, 100, 50, 8, 0.1, 1, "2D-30K").unwrap();
 }
