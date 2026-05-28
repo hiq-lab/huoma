@@ -87,7 +87,12 @@ investigate — do not "fix" them by relaxing tolerances.
 | `kim_validation::stage_d` | Dense statevector at N = 24, χ = 256 | max ⟨Z⟩ err ≤ 1e-15 |
 | `ttn_tindall_127::depth_1` | Tindall et al. PRX Quantum 5 010308 (2024) | exact at FP precision |
 | `ttn_eagle_heavy_hex::*` | Eagle 127q golden file | byte-identical to `tests/golden/ibm_eagle_127.json` |
-| `projected_ttn_scale::*` | 100K + 1M qubit pipeline | all ⟨Z⟩ finite, in `[-1, 1]` |
+| `projected_ttn_scale::*` | 100K + 1M + 1B qubit pipeline | all ⟨Z⟩ finite, in `[-1, 1]` |
+| `adiabatic_ramp_chain_matches_dense_lossless` | Chain dense reference at N = 12, lossless χ | max ⟨Z⟩ err ≤ 2e-14 |
+| `adiabatic_ramp_binary_tree_matches_dense_lossless` | Balanced binary tree at N = 15, lossless χ, `Backend::Tree` | max ⟨Z⟩ err ≤ 5e-14 |
+| `adiabatic_ramp_heavy_hex_grid_matches_dense_lossless` | `grid(3, 2)` heavy-hex with 2 non-tree edges at N = 19 | max ⟨Z⟩ err ≤ 5e-13 |
+| `expectation_z_all_matches_naive_loop` | O(N · χ⁴) sweep vs O(N² · χ⁴) loop | bit-equal |
+| `canonicalize_left_and_normalize_preserves_expectation` | Left-isometric + Frobenius-normalised, ⟨Z⟩ unchanged | bit-equal |
 
 The Aer ground-truth files are *not* checked in (`.gitignore` excludes
 `data/`). Regenerate via `python experiments/generate_aer_ground_truth.py`

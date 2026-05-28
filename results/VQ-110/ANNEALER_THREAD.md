@@ -1,5 +1,13 @@
 # VQ-110 — 1M-qubit closed-system adiabatic ramp
 
+> **Status: closed 2026-05-28.** Scope is **closed-system adiabatic-ramp
+> engine stress-test on a 1D chain**, not an annealer benchmark. The
+> originally intended D-Wave routing-prediction programme requires Pegasus /
+> Zephyr topology generators and a routing-variation sweep that were never
+> built — deferred to ROADMAP Track H. What stays load-bearing from this
+> run is the numerical infrastructure (`canonicalize_left_and_normalize`,
+> `expectation_z_all`) and the 1M-scale stability evidence.
+
 **Date:** 2026-05-02
 **Hardware:** Mac Studio M4 Ultra, 128 GB unified memory, macOS 26.3
 **Test:** `tests/adiabatic_ramp_scale.rs::adiabatic_ramp_1m_qubits_chain_completes`
@@ -16,12 +24,11 @@ and `H_problem = J_0 Σ Z_iZ_{i+1} + h_z_0 Σ Z_i` (transverse-field
 Ising chain). Driver `h_x_0 = 1.0`, problem `J_0 = 1.0, h_z_0 = 0.1`,
 step size `dt = 0.1`. Bond dimension `χ = 8`. Initial state |+⟩^⊗N.
 
-The ramp is the closed-system idealised version of what an analog
-quantum annealer would do thermally: D-Wave Advantage6 today carries
-~5,760 Pegasus qubits, Advantage2 within the year ~7,000 Zephyr,
-and after minor-embedding the *logical* capacity is 10²–10⁴ variables
-on sparse instances. Huoma carries a million logical variables under
-unitary evolution end-to-end on a desktop in 18.5 minutes.
+The 1D chain is a numerically tractable case (area-law in 1D, χ = 8
+sufficient) used to stress-test the gate-and-truncate pipeline at
+million-variable scale. It is *not* a model of any annealer topology —
+D-Wave Pegasus/Zephyr are 2D-ish hardware graphs with non-trivial
+connectivity, and a 1D chain says nothing about routing on those graphs.
 
 ---
 
@@ -125,41 +132,37 @@ unchanged).
 
 ## Where this lives in the bigger picture
 
-The 1B-qubit `ProjectedTtn` run (the original VQ-110 headline,
-[`REPORT.md`](REPORT.md)) is the *projected* path: a stable
-analytical bulk plus volatile islands, useful when most qubits are
-commensurate. This 1M-qubit adiabatic ramp is the *unprojected* path:
-plain Mps with bounded χ, no projection, every qubit's amplitude
-explicitly tracked through the schedule. They are different
+The 1B-qubit `ProjectedTtn` run ([`REPORT.md`](REPORT.md)) is the
+*projected* path: stable analytical bulk plus volatile islands, useful
+when most qubits are commensurate. This 1M-qubit adiabatic ramp is the
+*unprojected* path: plain Mps with bounded χ, no projection, every
+qubit's amplitude explicitly tracked through the schedule. Different
 abstractions for different physics — projected is for "sparse defects
 in a clean host," unprojected adiabatic is for "every variable has a
 non-trivial trajectory."
-
-For the annealer thread the unprojected path is what matters: D-Wave
-problems don't have commensurate-host structure to project against.
-The 1M unprojected ramp is therefore the load-bearing demonstration
-that a desktop classical simulator can carry a million-variable
-closed-system adiabatic schedule on a tree-decomposable Ising graph.
 
 **Honest scope.** This is *not*:
 
 - A claim that 1D-chain TFIM is hard. It isn't. The state stays
   near-product for the first many steps and the entanglement growth
   is bounded by 1D area-law. χ = 8 is enough.
-- A claim of beating D-Wave on D-Wave's actual workloads. Real
-  annealers exploit thermal fluctuations; closed-system unitary is a
-  different physical regime.
+- A model of D-Wave routing. 1D chains are not annealer topologies,
+  and an annealing problem Hamiltonian is real-valued couplings, not a
+  frequency channel — so sin(C/2) commensurability (Huoma's distinguishing
+  primitive) does not apply. Anything in this run that uses Huoma uses it
+  as a generic TTN simulator, not as the sin(C/2)-structured one.
 - An adiabatic ground-state finder. T = n_steps · dt = 5.0 is far
   below the adiabatic limit T ~ 1/Δ_min² for the TFIM gap, so the
   final ⟨Z⟩ values reflect a finite-time ramp, not the problem
-  Hamiltonian's ground state. The point is *capability at scale*,
-  not theoretical adiabaticity.
+  Hamiltonian's ground state. The point is *engine capability at
+  scale*, not theoretical adiabaticity.
 
 What this *is*: closed-system unitary evolution at million-variable
-scale, with the gate primitives validated end-to-end at small N
-against `DenseState`, and at scale via norm² and bounded-discarded
-checks. The closed-system idealised version of what no annealer will
-embed for 5–10 years.
+scale on a 1D chain, with the gate primitives validated end-to-end at
+small N against `DenseState`, and at scale via norm² and
+bounded-discarded checks. A stress-test of `Mps + apply_kim_step`
+plus the new `canonicalize_left_and_normalize` and `expectation_z_all`
+primitives. Useful as engine evidence; not useful as annealer evidence.
 
 ---
 

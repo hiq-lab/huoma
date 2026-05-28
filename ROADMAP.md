@@ -85,10 +85,19 @@ invariant chains where uniform-χ is already optimal.
 
 ## Roadmap
 
-The roadmap is organised in four tracks. Track A is **closed** by Phase 7
-(`PHASE7_REPORT.md`); Track B is the production-hardening backlog; Track C
-contains research ideas that may or may not get funded; Track D is the
-next strategic commitment.
+**Updated 2026-05-28.** The roadmap reflects the actual state of the code:
+Track A closed (Phase 7), Track B partially advanced by the April-2026
+scale sprint, Track C unchanged, Track D fully landed (Phase 8 + Eagle
+127 Tindall benchmark + 1M-qubit `ProjectedTtn`), Track E unchanged.
+Two new tracks are added: **Track F** (non-Euclidean topologies + magnetic
+Hamiltonians, design doc only — see `TRACK_F_DESIGN.md`) and **Track G**
+(bond-disordered XXZ in the Griffiths regime — the missing sin(C/2)
+validation experiment, the next active work item). A previously-active
+"closed-system adiabatic-ramp + annealer-routing-prediction" thread is
+reframed as **Track H — deferred**: the engine evidence (1M chain,
+9.5K 2D grid) lives on as scale infrastructure, but the predictive
+D-Wave-routing programme it was framed against was never built and is
+out of scope for now.
 
 ---
 
@@ -185,15 +194,14 @@ a circuit + a χ allocation and returns:
 **Deliverable**: `src/cost.rs` + tests + integration with the existing
 benchmarks.
 
-#### B.3 — Streaming / chunked observables
+#### B.3 — Streaming / chunked observables ✅ done
 
-Currently `expectation_z` builds two left environments end-to-end per
-qubit, so computing all N expectation values is O(N² · χ³). For large N
-this dominates wall time. A single sweep that emits all N expectation
-values in one pass is O(N · χ³) — same as one current call.
-
-**Deliverable**: `Mps::expectation_z_all() -> Vec<f64>` that does the
-single-sweep variant.
+Delivered as `Mps::expectation_z_all() -> Vec<f64>` in commit `29642db`.
+O(N · χ⁴) total (shared left/right env builds, parallelised over q)
+replacing the O(N² · χ⁴) naïve loop. `Ttn::expectation_z_all` delegates
+to this fast path on `Backend::Linear`. Unit test
+`expectation_z_all_matches_naive_loop` pins agreement with the slow-but-
+trusted O(N² · χ⁴) reference.
 
 #### B.4 — Serialisation
 
@@ -208,6 +216,40 @@ clippy::type_complexity, clippy::manual_clamp)]`. Some of these are real
 issues that should be fixed in the code; others are spurious and should be
 narrowed. Same for several `derive_default_impl` warnings on
 `TruncationMode`. Tech debt, low priority but worth a one-shot pass.
+
+#### B.6 — Canonical-form stability primitives ✅ done
+
+Two new primitives proven load-bearing at million-scale in the April-2026
+scale sprint:
+
+- `Mps::canonicalize_left_and_normalize` (commit `ccb479f`) — left-to-right
+  SVD sweep, no truncation, `U` left-isometric, `S V†` folded right,
+  rightmost site divided by its Frobenius norm. O(N · χ³). Required
+  because the gate-and-truncate pipeline absorbs `sqrt(S)` on both sides
+  after every bond, leaving the MPS in no canonical form; cumulative FP
+  drift overflows env contractions at N ≳ 10⁵ × 50 steps and breaks
+  `faer` SVD mid-ramp at N = 10⁶.
+- `Ttn::canonicalize_and_normalize` (commit `4584311`) — tree analogue via
+  `gauge::canonicalize_to(sites, topology, root)` leaves-to-root QR sweep.
+  Same role at scale on the 2D path.
+
+Both pinned by unit tests
+(`canonicalize_left_and_normalize_preserves_expectation`, equivalent for
+tree). Without them no million-scale run is numerically defensible.
+
+**Cadence finding (2D, May 2026)**: the canonicalize cadence does not
+scale linearly with `N`. On the 2D `grid(R, B)` path, `canon_every=5`
+ran successfully up to 19K qubits but failed at 30K with `SvdFailed(0)`
+partway through the ramp — accumulated truncation drove a local Θ
+matrix singular faster than the every-5-step sweep could clean it up.
+`canon_every=1` (every ramp step) ran 30K to completion with norm² =
+1.000000 and discarded weight in line with the 19K extrapolation. The
+wall-time penalty is small (~50 × ~170 ms canon at 30K, < 6 % of the
+149-min ramp). Implied design rule: at 2D scale, canon-every-step is
+the default; the 1D path can stay on every-5-step because chain
+area-law keeps truncation pressure bounded. Logs in
+`results/VQ-110/adiabatic_2d_30k_attempt_failed.log` and
+`adiabatic_2d_30k_run.log`.
 
 ---
 
@@ -248,71 +290,32 @@ discarded weight. Worth revisiting if A.2 shows that PR is the bottleneck.
 
 ---
 
-### Track D — Tree-Tensor-Network generalisation (the next strategic commitment)
+### Track D — Tree-Tensor-Network generalisation ✅ closed
 
-**No longer gated by Track A.** This is the largest single investment
-that would change what Huoma is. It is months of work with real research
-risk. The strategic case is straightforward: a simulator that cannot
-execute on the actual target backends (IBM Eagle/Heron heavy-hex,
-IQM Garnet/Emerald grids) is not a useful tool, regardless of how
-well-validated its 1D allocator is. Track A confirmed that the 1D
-allocator story is *finished* — sin(C/2) via water-filling is the right
-production default and there is no further headroom there — so the
-months of Track D work do not have to carry the weight of an unresolved
-1D question alongside them.
+Closed by Phase 8 (`PHASE8_REPORT.md`). The full TTN backend lives in
+`src/ttn/` (5,200+ lines across 13 files). All sub-items delivered:
 
-Track D is the next planning conversation. A separate design doc will
-break it down properly; the bullet points below are the existing Phase 6
-sketch, kept as a starting point.
+- **D.1** — `Ttn` data structure, gauge tracking, two-site contraction +
+  bipartition SVD on arbitrary tree edges, discarded-weight tracker per
+  edge (`src/ttn/mod.rs`, `gauge.rs`, `contraction.rs`).
+- **D.2** — `HeavyHexLayout::ibm_eagle_127()` spanning-tree decomposition
+  with golden file (`src/ttn/heavy_hex.rs`, `tests/golden/ibm_eagle_127.json`).
+- **D.3** — Tindall et al. (PRX Quantum 5, 010308, 2024) benchmark
+  reproduced: depth-1 ⟨Z₆₂⟩ exact to FP precision (`tests/ttn_tindall_127.rs`).
+  Depth-5/10/20 trajectory differs as expected at χ = 8 (truncation
+  artefact, not a bug).
+- **D.4** — IQM topology mappings not built. The Eagle 127 path covers the
+  load-bearing case; the IQM grids would extend coverage but are not
+  required for Huoma's production story now that `HeavyHexLayout::grid(R, B)`
+  generalises beyond the hard-coded Eagle layout.
+- **D.5** — `ProjectedTtn` with `partition_tree_adaptive` +
+  `extract_volatile_islands` + `BoundaryTensor` analytical ⟨Z⟩ on stable
+  qubits. Scales to 1M qubits in 5.8 s and 1B qubits in ~31 min on
+  Mac Studio M4 Ultra (`tests/projected_ttn_scale.rs`, `results/VQ-110/REPORT.md`).
 
-#### D.1 — TTN data structure and basic operations
-
-Generalise `Mps` from a 1D chain to a tree. Each site has at most three
-neighbours (left, right, vertical). The "left environment" sweep that
-underpins everything in `mps.rs` becomes a depth-first traversal of the
-tree. Basic operations:
-- Apply single-qubit gate at a leaf
-- Apply two-qubit gate on adjacent leaves (same parent)
-- Compute expectation value
-- SVD truncate at any internal edge
-- Discarded-weight tracking per edge
-
-**Cost estimate**: ~2000 lines of new Rust, ~3 weeks of focused work for
-the basic data structure + the seven validation tests that match what
-`mps.rs` already has for the 1D case.
-
-#### D.2 — Heavy-hex topology mapping
-
-IBM Eagle (127q) and Heron (156q) are heavy-hex graphs. Map heavy-hex onto
-a TTN by tree-decomposing the heavy qubits. Most heavy-hex edges are local
-in the tree decomposition; the few that aren't get handled via the same
-SVD-based gate application as 1D.
-
-**Deliverable**: `src/topology/heavy_hex.rs` with the IBM Eagle 127q
-topology hardcoded as a tree, plus a heavy_hex test in `tests/`.
-
-#### D.3 — Tindall benchmark
-
-Once D.1 and D.2 are in place, run the Tindall et al. (PRX Quantum 5,
-010308, 2024) 127q kicked Ising benchmark on the same observables they
-report (single-qubit ⟨Z⟩ at depth 5, 10, 20 with J·dt = 0.5, h·dt = 0.4).
-
-**Success criterion**: ⟨Z⟩ within 1 % of Tindall's belief-propagation
-result, at compute cost competitive with their reported numbers. **Or**:
-demonstrate clearly *where* Huoma's TTN approach differs and why
-(probably: Jacobian-driven adaptive bond instead of belief propagation).
-
-This is the long-arc project that, if successful, makes Huoma a
-first-class citizen in the IBM-superconducting-platform benchmark
-landscape. If unsuccessful, the negative result is itself publishable
-("here is a class of TN methods that does not extend to heavy-hex
-benchmarks competitively") and Huoma falls back to its 1D niche.
-
-#### D.4 — IQM topology mappings
-
-Similar to D.2 for IQM Garnet (20q), Emerald (54q), and Crystal — all 2D
-grids, more "naturally TTN-able" than heavy-hex. Likely cheaper than D.2
-because the tree decomposition is more natural.
+What remains under Track D as a follow-on item rather than a Phase 9
+sprint: D.4 IQM mappings if/when a customer needs Garnet/Emerald/Crystal
+specifically.
 
 ---
 
@@ -338,6 +341,111 @@ Recording these so we don't re-litigate them every quarter:
 
 ---
 
+### Track F — Non-Euclidean topologies and magnetic Hamiltonians (design only)
+
+Design doc lives at `TRACK_F_DESIGN.md`. **No code written.** Realistic
+earliest start: Q4/2026 or Q1/2027. Two orthogonal generalisations:
+
+1. **Complex-valued tensors** (F.1) — `Scalar` trait over `f64` ⊕
+   `Complex<f64>`, all `gemm`/SVD/QR through `faer`'s complex paths.
+   ~2 weeks mechanical work, prerequisite for everything else in F.
+2. **Hyperbolic layouts** (F.2) — Fuchsian-group word generator for
+   {p, q} tilings on the Poincaré disc. ~3-4 weeks.
+
+Downstream phases (F.3 Peierls/Hofstadter, F.4 spin-orbit, F.5 lanthanide
+benchmark, F.6 circuit-QED hyperbolic, F.7 Selberg / Riemann-adjacent)
+depend on the F.1 + F.2 foundation. F.4 is the high-risk research item
+(tensor-network spin-orbit is 2024-2025 state-of-the-art). F.7 is the
+RH-adjacent option: Laplace spectrum on a {3,7}-discretised modular
+surface, statistics compared to Selberg-spectrum tables and Montgomery
+GUE — methodologically a small extension of F.3, scientifically a quantum
+chaos / spectral geometry contribution rather than a number-theory one.
+
+Honest framing: an RH-flavoured F.1 → F.2 → F.3 → F.7 sub-path is ~9-12
+weeks total and produces empirical Selberg-spectrum data on
+million-vertex hyperbolic tilings that nobody else has, but does not
+constitute work on RH itself.
+
+---
+
+### Track G — Bond-disordered XXZ in the Griffiths regime (active)
+
+**The next planning conversation.** This is the validation experiment
+that closes the one open question Phase 7 left behind: *for which class
+of 1D models does sin(C/2) provably beat uniform-χ at matched budget?*
+Phase 7 ruled it out for clean / weakly-disordered KIM (Dalzell–Brandão
+puts uniform-χ near-optimal there). The published opening is bond-
+disordered XXZ in the Griffiths regime (Aramthottil et al., PRL 133,
+196302 (2024)) — rare regions of anomalously small `J_i` dominate the
+slow dynamics, and a per-bond allocator has a real opportunity if it can
+identify them.
+
+**Sub-items**:
+
+- **G.1** — XXZ gate set in `src/kicked_ising.rs` (or new
+  `src/models/xxz.rs`): `H = Σ J_i (Sx_i Sx_{i+1} + Sy_i Sy_{i+1} + Δ Sz_i Sz_{i+1})`
+  with sampling primitives for the standard bond-disorder distributions.
+- **G.2** — ITensor reference path. `external/itensor_ref/` already
+  carries the Julia/ITensor scaffold from Track D; extend with an
+  ε-truncation runner that matches a configurable total-χ budget.
+- **G.3** — Shootout. At matched total budget per system size, three
+  allocators: uniform, ε-truncated ITensor reference, sin(C/2) +
+  water-filling. Metrics: max ⟨S^z⟩ error, max bipartite entanglement
+  entropy error, total wall time. Disorder strength swept across weak →
+  Griffiths regime.
+- **G.4** — Verdict. Either (a) sin(C/2) beats uniform in a measurable
+  regime → publishable methods note, Track A's open question definitively
+  answered, or (b) sin(C/2) is competitive but not better → Track A
+  closes for good with that statement, no further allocator work.
+
+**Cost**: 1-2 weeks focused. Risk: medium — it's possible sin(C/2)'s
+frequency-channel structure does not map cleanly onto bond-disorder
+(disorder is in couplings, not local frequencies), in which case the
+right control is a sin(C/2) variant that consumes the bond-disorder
+distribution directly. That would itself be a real finding.
+
+**Tracked in valiant-ops as VQ-111.**
+
+---
+
+### Track H — Annealer routing prediction (deferred)
+
+The originally-framed motivation behind the closed-system adiabatic-ramp
+runs (`results/VQ-110/ANNEALER_THREAD.md`, `ANNEALER_THREAD_2D.md`) was
+to scale the simulator to qubit counts beyond current D-Wave Pegasus /
+Zephyr hardware, observe routing pathologies at scale, and project back
+onto next-generation D-Wave architecture decisions. The April-2026
+sprint did not build that programme; it built the *engine* (validated 1M
+chain, 9.5K 2D heavy-hex grid with non-tree edges, `canonicalize_and_normalize`
+primitives) but not Pegasus/Zephyr topology generators, not a routing
+variation sweep, and not the back-projection.
+
+What is missing for Track H to be a real programme:
+
+1. `PegasusLayout::generation(m)` matching the D-Wave Boothby et al. 2020
+   spec, validated bit-stable against the `dwave-system` Python SDK.
+2. `ZephyrLayout::generation(m)` for Advantage2-class topologies.
+3. Routing-variation framework: fixed Ising instance, varied
+   swap-network orderings and χ allocations, per-edge discarded-weight
+   diagnostics as TSV + heatmap.
+4. Scaling sweep across Pegasus(15), (16), (20) and Zephyr(4), (6) —
+   pattern extraction by edge class.
+5. A predictive write-up that says "at Pegasus(M=X), expect
+   bottleneck-class Y to dominate at fraction Z."
+
+**Why this is deferred, not killed**: Huoma's distinguishing primitive is
+sin(C/2) commensurability on frequency channels. An annealing problem
+Hamiltonian is real-valued couplings, not a frequency channel — the
+sin(C/2) machinery does not apply. Track H would use Huoma as a generic
+TTN simulator, not as the sin(C/2)-structured one. That is a fine
+application project but it does not advance Huoma as a library. Returning
+to it is conditional on (a) a concrete D-Wave-adjacent collaboration that
+justifies an application sprint, or (b) Track G finding that the
+allocator story has further headroom in a regime that overlaps with
+annealer-relevant graph structure.
+
+---
+
 ## Decision points
 
 1. ✅ **Resolved (Phase 7)**: does any sensitivity-based allocator clearly
@@ -345,14 +453,23 @@ Recording these so we don't re-litigate them every quarter:
    in the form the question was asked, and the right *production* answer
    was sin(C/2) via water-filling all along. See `PHASE7_REPORT.md`.
 
-2. **Before starting Track D**: is the heavy-hex / 2D extension a
-   research project we want to invest months in? The Phase 7 framing
-   ("a simulator that can't simulate most of our target backends isn't
-   worth the effort") is a strong yes by default; the open sub-question
-   is *how much* of Track D to scope into the first deliverable
-   (just heavy-hex topology + N=127 Tindall benchmark vs. also IQM grids
-   vs. also a new χ allocator extension to the tree case). This is the
-   next planning conversation.
+2. ✅ **Resolved (Phase 8)**: does the TTN generalisation reproduce
+   published heavy-hex benchmarks? **Yes** — Tindall ⟨Z₆₂⟩ at depth 1
+   exact to FP precision, full Eagle 127q pipeline at 760 ms / 20 steps,
+   `ProjectedTtn` carries 10⁹ qubits in ~31 min. See `PHASE8_REPORT.md`
+   and `results/VQ-110/REPORT.md`.
+
+3. **Open (Track G)**: is there a 1D regime where sin(C/2) provably beats
+   uniform-χ at matched budget? Bond-disordered XXZ in the Griffiths
+   regime is the published opening (Aramthottil et al., 2024). Either
+   answers definitively or extends the allocator. This is the next
+   planning conversation.
+
+4. **Open (Track F)**: when do we commit to the complex-tensor +
+   hyperbolic-layout pivot? Currently sketched only. F.1 + F.2 are the
+   gating prerequisite for everything downstream including the RH-adjacent
+   sub-path. Q4/2026 or Q1/2027 by default; pull forward if a customer
+   conversation or paper deadline justifies it.
 
 ---
 

@@ -1,15 +1,25 @@
 # VQ-110 — 2D heavy-hex closed-system adiabatic ramp
 
+> **Status: closed 2026-05-28.** Scope is **engine stress-test on a
+> regular heavy-hex grid with non-tree edges via swap-network**, not an
+> annealer benchmark. D-Wave Pegasus/Zephyr have different connectivity
+> structures; the `grid(R, B)` layout used here is topologically a
+> regular brick pattern (degree-3 data, degree-2 bridges), not an actual
+> Pegasus or Zephyr graph. The originally intended D-Wave
+> routing-prediction programme is deferred to ROADMAP Track H. What
+> stays load-bearing from this run is `Ttn::canonicalize_and_normalize`
+> and the new heavy-hex-grid-with-non-tree-edges FP-precision anchor.
+
 **Date:** 2026-05-03
 **Hardware:** Mac Studio M4 Ultra, 128 GB unified memory, macOS 26.3
 **Tests:** `tests/adiabatic_ramp_2d_scale.rs::adiabatic_ramp_2d_grid_*_completes`
 
-Annealer-thread chapter 2 — the unprojected-2D headline.
-[Chapter 1](ANNEALER_THREAD.md) carried the same closed-system adiabatic
-ramp on a 1D chain at 10⁶ qubits. This chapter pushes the same primitive
-into a true 2D heavy-hex topology with non-tree edges, where 2D
-entanglement obeys *perimeter* law not chain area-law and the same χ=8
-that worked on a 1M chain saturates at much smaller N.
+A second-stage stress-test that exercises both the tree-edge fast path
+and the swap-network non-tree-edge path of the TTN backend at scale.
+[Chapter 1](ANNEALER_THREAD.md) ran a 1D chain at 10⁶ qubits; this run
+pushes the same primitive into a regular 2D heavy-hex-style grid where
+the entanglement obeys *perimeter* law instead of chain area-law, and
+χ = 8 saturates at much smaller N.
 
 ---
 
@@ -153,21 +163,22 @@ competing speed claims:
   "everything works at 1M" stress test for the MPS primitives.
 - **2D unprojected** — the load-bearing 2D headline. Every qubit is
   tracked explicitly through the schedule, no analytic projection.
-  Honest scope is "10⁴ qubits unprojected" not "10⁶+", because the
+  Honest scope is "3 × 10⁴ qubits unprojected" not "10⁶+", because the
   perimeter-law entanglement growth saturates χ=8–16 at much smaller
-  N than chain area-law does.
+  N than chain area-law does; the 30K run with canon-every-step is the
+  current practical ceiling at χ = 8.
 - **Projected** — for "sparse defects in clean host" workloads. Bulk
   is analytic; only volatile islands carry full TTN. Lets the 1B
   qubit headline land but is the wrong tool when *every* qubit has a
   non-trivial trajectory.
 
-For the annealer thread the 2D unprojected path is the most directly
-relevant: D-Wave problems live on 2D-ish graphs (Pegasus, Zephyr) and
-don't have commensurate-host structure to project against. The 30K
-unprojected 2D headline is therefore roughly **43× a top-end annealer's
-post-embedding logical capacity** (D-Wave Advantage6 today after
-minor-embedding ≈ 700 logical variables on dense problems; Advantage2
-within the year ≈ 1000), under closed-system unitary at bounded χ.
+D-Wave Pegasus and Zephyr are 2D-ish hardware graphs with their own
+connectivity rules; this run uses a regular `grid(R, B)` brick pattern
+which is *not* Pegasus and *not* Zephyr. A meaningful "vs annealer"
+comparison would require (a) Pegasus/Zephyr generators, (b) variation
+across swap-network orderings and χ allocations, and (c) per-edge
+discarded-weight diagnostics correlated with topological properties.
+None of those exist in this run. See ROADMAP Track H.
 
 ---
 
@@ -178,25 +189,28 @@ within the year ≈ 1000), under closed-system unitary at bounded χ.
 - A claim that 2D heavy-hex ferromagnetic Ising is hard. The state
   stays near-product for the first many steps and the entanglement
   growth stays bounded for a 50-step ramp at ferromagnetic `J = 1`.
-- A claim of beating D-Wave on D-Wave's actual workloads. Real
-  annealers exploit thermal fluctuations; closed-system unitary is a
-  different physical regime.
+- A model of D-Wave routing. The `grid(R, B)` layout is not Pegasus
+  and not Zephyr. An annealing problem Hamiltonian has real-valued
+  couplings, not a frequency channel — so sin(C/2) commensurability
+  (Huoma's distinguishing primitive) does not apply. This uses Huoma
+  as a generic TTN simulator, not as the sin(C/2)-structured one.
 - An adiabatic ground-state finder. T = `n_steps · dt` = 5.0 is far
   below the adiabatic limit T ~ 1/Δ_min² for the 2D TFIM gap, so the
   final ⟨Z⟩ values reflect a finite-time ramp, not the problem
-  Hamiltonian's ground state. The point is *capability at scale*.
+  Hamiltonian's ground state. The point is *engine capability at scale*.
 - An IBM-Eagle-style stagger lattice. The `grid(R, B)` layout is a
-  regular brick pattern; it's topologically a heavy-hex (degree-3
-  data, degree-2 bridges, same spanning-tree machinery) but lacks the
-  alternating stagger of true IBM heavy-hex. The Eagle 127 path is
-  unchanged and byte-stable.
+  regular brick pattern; topologically heavy-hex-shaped (degree-3
+  data, degree-2 bridges) but without the alternating stagger of true
+  IBM heavy-hex. The Eagle 127 path is unchanged and byte-stable.
 
 **What this *is*:** closed-system unitary evolution on a 2D
-tree-decomposable Ising graph at 10⁴ scale, with the gate primitives
-validated end-to-end at small N against `DenseState`, with the
-canonicalize-and-normalize primitive proven necessary at scale on the
-chain (1M) and now load-bearing on the 2D path. Roughly an order of
-magnitude beyond current annealer hardware's logical capacity.
+tree-decomposable Ising graph at 3 × 10⁴ scale, with the gate
+primitives validated end-to-end at small N against `DenseState`, with
+`canonicalize_and_normalize` proven necessary at scale on the chain
+(1M) and now load-bearing on the 2D path under a canon-every-step
+cadence. A stress-test of the TTN backend's combined tree-edge +
+swap-network-non-tree-edge pipeline plus its canonical-form
+stability primitive.
 
 ---
 
