@@ -19,69 +19,100 @@ hierarchies, boundary structure), produce observables at lower compute cost
 than uniform-χ MPS at the same fidelity, with **truncation error counted,
 not estimated**."
 
-The wrong benchmarks for Huoma — and we have already learned this the hard
-way — are anything that needs (a) 2D physical topology beyond 1D
-nearest-neighbour, (b) open-system / Lindblad dynamics, or (c) translation-
-invariant chains where uniform-χ is already optimal.
+The wrong benchmarks for Huoma — and we have already learned this the
+hard way — are anything that needs (a) open-system / Lindblad dynamics,
+(b) translation-invariant 1D chains where uniform-χ is already optimal,
+or (c) couplings on graphs that are not tree-decomposable.
 
-## Where Huoma stands today (April 2026, after Phase 7)
+## Where Huoma stands today (May 2026, after Phase 8 + scale sprint)
 
 ✅ **Validated**:
-- 1D MPS evolution at floating-point precision against an independent
-  dense statevector reference at N = 12 (2.6e-15) and N = 24 (7.4e-16)
-- 6.8× speedup over dense statevector at N = 24 with FP-limit observable
-  agreement
-- 49 lib tests + 4 KIM stages (A, B, D, F), all green
+- 1D MPS at FP precision vs dense statevector: N = 12 (2.6e-15) and
+  N = 24 (7.4e-16); 6.7× speedup at N = 24.
+- Aer statevector ground truth: F = 1.000000, TVD = 0 at χ = 8 up to
+  N = 28 (`accuracy::accuracy_vs_aer`).
+- TTN backend on IBM Eagle 127q heavy-hex: depth-1 ⟨Z₆₂⟩ exact vs
+  Tindall et al. PRX Quantum 5 010308 (2024) (`ttn_tindall_127`).
+- ProjectedTtn: 10⁶ qubits 1D chain in 5.8 s on laptop; 10⁹ qubits 2D
+  heavy-hex in ~31 min on Mac Studio M4 Ultra (`projected_ttn_scale`,
+  `results/VQ-110/REPORT.md`).
+- Adiabatic-ramp engine: 1M chain in 18 min, 30K 2D heavy-hex grid with
+  non-tree edges in 150 min — with three FP-precision dense anchors at
+  N = 12 chain, N = 15 binary tree, N = 19 heavy-hex grid.
+- ~227 tests total across lib + integration binaries, all green.
 
-✅ **Production allocator path**:
+✅ **Production allocator path** (1D):
 - `huoma::chi_allocation_sinc(frequencies, total_budget, chi_min, chi_max)`
   is the recommended one-call entry point for adaptive χ on any 1D MPS
   workload with per-site frequencies. O(N · radius²), microseconds at
   N ≤ 200, no pilot, no censoring.
 - `huoma::chi_allocation_target_budget(scores, total_budget, chi_min,
-  chi_max)` is the score-agnostic water-filling primitive for users who
-  compute their own per-bond complexity scores by other means.
+  chi_max)` is the score-agnostic water-filling primitive.
 - Both live in `src/allocator.rs` and are re-exported at crate root.
+- Tree-edge analogue `chi_allocation_sinc_tree` in `src/ttn/allocator.rs`.
 
 ✅ **Infrastructure in place**:
-- MPS-native `expectation_z` and `norm_squared` (work for any N)
-- Discarded-weight tracker on every bond + `TruncationMode::DiscardedWeight`
+- MPS backend: `expectation_z`, `expectation_z_all` (O(N · χ⁴) sweep),
+  `norm_squared`, `canonicalize_left_and_normalize` (load-bearing at 10⁶).
+- TTN backend: `Ttn` with gauge tracking, two-site contraction + SVD on
+  arbitrary tree edges, swap-network for non-tree edges,
+  `canonicalize_and_normalize` (load-bearing at 30K 2D, canon-every-step
+  cadence at that scale).
+- Topologies: `HeavyHexLayout::ibm_eagle_127()` (hard-coded golden) +
+  `HeavyHexLayout::grid(R, B)` (parametric).
+- Projected path: `ProjectedTtn` with `partition_tree_adaptive` +
+  `extract_volatile_islands` + `BoundaryTensor` analytical ⟨Z⟩ on stable
+  qubits — million-vertex scaling for commensurate hosts.
 - sin(C/2) channel map (`ChannelMap::from_frequencies_sparse`) and
-  partitioning (`partition::partition_adaptive`)
+  partitioning (`partition::partition_adaptive` + tree analogue).
+- Discarded-weight tracker on every bond + `TruncationMode::DiscardedWeight`.
 - Independent dense reference simulator for KIM (homogeneous + disordered)
-- Reproducible deterministic test infrastructure (fixed PRNG seeds)
-- Bianchi-violation diagnostic for gauge consistency
+  and topology-agnostic statevector reference for TTN tests.
+- Bianchi-violation diagnostic for gauge consistency.
+- Reproducible deterministic test infrastructure (fixed PRNG seeds).
 
 ⚠️ **Honest limitations**:
-- 1D-only. No 2D topology support (heavy-hex, square lattice). **This is
-  the live constraint** that gates the strategic case for Track D.
-- sin(C/2) is *competitive with* uniform-χ on disordered KIM at matched
-  budget (~5–30 % off in either direction depending on N), not strictly
-  better. Per Dalzell–Brandão (Quantum 2019) this is the predicted
-  ceiling for any allocator on clean / weakly-disordered 1D systems —
-  uniform-χ is structurally near-optimal there.
-- Whether sin(C/2) can beat uniform on *strongly* disordered (Griffiths
-  regime) 1D systems is untested. The roadmap does not currently plan to
-  test it; see Track A's "what closed Phase 7" section.
+- sin(C/2) is *competitive with* uniform-χ on weakly-disordered 1D KIM
+  at matched budget (~5–30 % off in either direction depending on N),
+  not strictly better. Per Dalzell–Brandão (Quantum 2019) this is the
+  predicted ceiling for any allocator on clean / weakly-disordered 1D
+  systems — uniform-χ is structurally near-optimal there.
+- Whether sin(C/2) provably beats uniform on *strongly* disordered
+  (Griffiths regime) 1D systems is the open question for Track G; it
+  is in flight, not resolved.
+- sin(C/2) presupposes a per-site frequency channel. Hamiltonians with
+  only couplings and no frequency structure (standard annealing problems,
+  most chemistry problem Hamiltonians) cannot use the sin(C/2) allocator —
+  they use Huoma as a generic TTN simulator. This is a deliberate scope
+  limit, not a missing feature.
+- 2D coverage is restricted to **tree-decomposable** topologies (heavy-hex,
+  general trees, sparse-defect projected hosts). Dense 2D lattices where
+  perimeter-law entanglement grows faster than χ can absorb are out of
+  reach at our χ budget; the 9.5K → 30K 2D adiabatic ramp work shows
+  where the practical ceiling sits at χ = 8 on `grid(R, B)`.
 
 🚫 **Removed in Phase 7**:
 - The finite-difference Jacobian module and all its allocators. The
   discarded-weight observable censors boundary bonds at low chi_min,
   producing matched-budget allocations 6–11× worse than uniform on
-  disordered KIM. Documented in `docs/history/PHASE7_REPORT.md` and commit `19a5793`.
+  disordered KIM. Documented in `docs/history/PHASE7_REPORT.md` and
+  commit `19a5793`.
 - The previous claim that sin(C/2) "doesn't predict per-bond discarded
   weight on QKR" was correct as a Spearman result on one benchmark
   family but does not survive as a general statement. As a matched-budget
   allocator on disordered KIM, sin(C/2) is the safe default. See
   Phase 7 report.
 
-🚫 **Permanently out of scope**:
+🚫 **Permanently out of scope** (Track E):
 - TJM / open-system simulation. Treats noise as Lindblad bath, exactly
   the wrong abstraction for systems where noise is information-bearing
   (cryocooler PUF, levitated-NV torsional coupling). Closed-system only.
 - Anything that requires materialising a dense statevector at large N.
   If you need that, use Aer.
 - Becoming a compiler. Huoma executes circuits, it does not compile them.
+- Python bindings inside this repo. `python/huoma-py/` is a separate
+  wrapper crate that takes Huoma as a dependency; no PyO3 inside the
+  core library.
 
 ## Roadmap
 
