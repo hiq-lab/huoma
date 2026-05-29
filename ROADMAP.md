@@ -35,7 +35,7 @@ or (c) couplings on graphs that are not tree-decomposable.
   Tindall et al. PRX Quantum 5 010308 (2024) (`ttn_tindall_127`).
 - ProjectedTtn: 10⁶ qubits 1D chain in 5.8 s on laptop; 10⁹ qubits 2D
   heavy-hex in ~31 min on Mac Studio M4 Ultra (`projected_ttn_scale`,
-  `results/VQ-110/REPORT.md`).
+  `results/VQ-110/projected_1b/REPORT.md`).
 - Adiabatic-ramp engine: 1M chain in 18 min, 30K 2D heavy-hex grid with
   non-tree edges in 150 min — with three FP-precision dense anchors at
   N = 12 chain, N = 15 binary tree, N = 19 heavy-hex grid.
@@ -279,8 +279,8 @@ wall-time penalty is small (~50 × ~170 ms canon at 30K, < 6 % of the
 149-min ramp). Implied design rule: at 2D scale, canon-every-step is
 the default; the 1D path can stay on every-5-step because chain
 area-law keeps truncation pressure bounded. Logs in
-`results/VQ-110/adiabatic_2d_30k_attempt_failed.log` and
-`adiabatic_2d_30k_run.log`.
+`results/VQ-110/annealer_stress_test/adiabatic_2d_30k_attempt_failed.log`
+and `results/VQ-110/annealer_stress_test/adiabatic_2d_30k_run.log`.
 
 ---
 
@@ -342,7 +342,7 @@ Closed by Phase 8 (`docs/history/PHASE8_REPORT.md`). The full TTN backend lives 
 - **D.5** — `ProjectedTtn` with `partition_tree_adaptive` +
   `extract_volatile_islands` + `BoundaryTensor` analytical ⟨Z⟩ on stable
   qubits. Scales to 1M qubits in 5.8 s and 1B qubits in ~31 min on
-  Mac Studio M4 Ultra (`tests/projected_ttn_scale.rs`, `results/VQ-110/REPORT.md`).
+  Mac Studio M4 Ultra (`tests/projected_ttn_scale.rs`, `results/VQ-110/projected_1b/REPORT.md`).
 
 What remains under Track D as a follow-on item rather than a Phase 9
 sprint: D.4 IQM mappings if/when a customer needs Garnet/Emerald/Crystal
@@ -442,7 +442,8 @@ distribution directly. That would itself be a real finding.
 ### Track H — Annealer routing prediction (deferred)
 
 The originally-framed motivation behind the closed-system adiabatic-ramp
-runs (`results/VQ-110/ANNEALER_THREAD.md`, `ANNEALER_THREAD_2D.md`) was
+runs (`results/VQ-110/annealer_stress_test/ANNEALER_THREAD.md`,
+`ANNEALER_THREAD_2D.md`) was
 to scale the simulator to qubit counts beyond current D-Wave Pegasus /
 Zephyr hardware, observe routing pathologies at scale, and project back
 onto next-generation D-Wave architecture decisions. The April-2026
@@ -488,7 +489,7 @@ annealer-relevant graph structure.
    published heavy-hex benchmarks? **Yes** — Tindall ⟨Z₆₂⟩ at depth 1
    exact to FP precision, full Eagle 127q pipeline at 760 ms / 20 steps,
    `ProjectedTtn` carries 10⁹ qubits in ~31 min. See `docs/history/PHASE8_REPORT.md`
-   and `results/VQ-110/REPORT.md`.
+   and `results/VQ-110/projected_1b/REPORT.md`.
 
 3. **Open (Track G)**: is there a 1D regime where sin(C/2) provably beats
    uniform-χ at matched budget? Bond-disordered XXZ in the Griffiths

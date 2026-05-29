@@ -132,7 +132,7 @@ unchanged).
 
 ## Where this lives in the bigger picture
 
-The 1B-qubit `ProjectedTtn` run ([`REPORT.md`](REPORT.md)) is the
+The 1B-qubit `ProjectedTtn` run ([`../projected_1b/REPORT.md`](../projected_1b/REPORT.md)) is the
 *projected* path: stable analytical bulk plus volatile islands, useful
 when most qubits are commensurate. This 1M-qubit adiabatic ramp is the
 *unprojected* path: plain Mps with bounded χ, no projection, every
