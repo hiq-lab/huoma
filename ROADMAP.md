@@ -39,7 +39,8 @@ or (c) couplings on graphs that are not tree-decomposable.
 - Adiabatic-ramp engine: 1M chain in 18 min, 30K 2D heavy-hex grid with
   non-tree edges in 150 min — with three FP-precision dense anchors at
   N = 12 chain, N = 15 binary tree, N = 19 heavy-hex grid.
-- ~227 tests total across lib + integration binaries, all green.
+- 215 tests total across lib + integration binaries (3 `#[ignore]`d
+  scale runs), all green on 2026-05-29.
 
 ✅ **Production allocator path** (1D):
 - `huoma::chi_allocation_sinc(frequencies, total_budget, chi_min, chi_max)`

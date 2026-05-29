@@ -55,7 +55,7 @@ for validation at `N ≤ 28`. Never use it as a production path.
 
 ```bash
 cargo build --release
-cargo test  --release                                          # 178 tests
+cargo test  --release                                          # 215 tests (3 ignored: scale runs)
 cargo test  --release --test kim_validation -- --nocapture     # 1D anchor (4 stages)
 cargo test  --release --test ttn_tindall_127 -- --nocapture    # Eagle 127q benchmark
 cargo test  --release --test projected_ttn_scale -- --nocapture # 100K + 1M scale

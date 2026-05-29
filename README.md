@@ -25,7 +25,8 @@ circuits where most of the graph is commensurate.
   N = 24. See [docs/history/PHASE6_REPORT.md](docs/history/PHASE6_REPORT.md).
 - **1M-qubit projected TTN** via commensurability partitioning, 3 Floquet
   steps in 5.8 s. See `tests/projected_ttn_scale.rs`.
-- **178 tests, all green.** Standalone Rust crate, no workspace
+- **215 tests, all green** (212 active + 3 `#[ignore]`d scale runs).
+  Standalone Rust crate, no workspace
   dependencies. Builds with stable Rust ≥ 1.75.
 
 ## What Huoma is
@@ -101,7 +102,7 @@ let chi = chi_allocation_sinc(&frequencies, total_budget, 2, 16);
 
 ```bash
 cargo build --release
-cargo test  --release                                          # 177 tests
+cargo test  --release                                          # 215 tests (3 ignored)
 cargo test  --release --test kim_validation -- --nocapture     # 1D anchor (4 stages)
 cargo test  --release --test ttn_tindall_127 -- --nocapture    # Eagle 127q benchmark
 cargo test  --release --test projected_ttn_scale -- --nocapture # 100K + 1M scale test
