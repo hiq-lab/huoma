@@ -1,9 +1,9 @@
 # Huoma Roadmap
 
 This document is the **forward-looking plan** for Huoma. The historical
-journey lives in `BIANCHI_JOURNEY.md` (Phases 1–5), `PHASE6_REPORT.md`
+journey lives in `docs/history/BIANCHI_JOURNEY.md` (Phases 1–5), `docs/history/PHASE6_REPORT.md`
 (KIM validation + the `apply_zz_fast` bug discovery), and
-`PHASE7_REPORT.md` (matched-budget allocator + sin(C/2) reframe + Track A
+`docs/history/PHASE7_REPORT.md` (matched-budget allocator + sin(C/2) reframe + Track A
 verdict).
 
 ## North star
@@ -68,7 +68,7 @@ invariant chains where uniform-χ is already optimal.
 - The finite-difference Jacobian module and all its allocators. The
   discarded-weight observable censors boundary bonds at low chi_min,
   producing matched-budget allocations 6–11× worse than uniform on
-  disordered KIM. Documented in `PHASE7_REPORT.md` and commit `19a5793`.
+  disordered KIM. Documented in `docs/history/PHASE7_REPORT.md` and commit `19a5793`.
 - The previous claim that sin(C/2) "doesn't predict per-bond discarded
   weight on QKR" was correct as a Spearman result on one benchmark
   family but does not survive as a general statement. As a matched-budget
@@ -90,7 +90,7 @@ Track A closed (Phase 7), Track B partially advanced by the April-2026
 scale sprint, Track C unchanged, Track D fully landed (Phase 8 + Eagle
 127 Tindall benchmark + 1M-qubit `ProjectedTtn`), Track E unchanged.
 Two new tracks are added: **Track F** (non-Euclidean topologies + magnetic
-Hamiltonians, design doc only — see `TRACK_F_DESIGN.md`) and **Track G**
+Hamiltonians, design doc only — see `docs/design/TRACK_F_DESIGN.md`) and **Track G**
 (bond-disordered XXZ in the Griffiths regime — the missing sin(C/2)
 validation experiment, the next active work item). A previously-active
 "closed-system adiabatic-ramp + annealer-routing-prediction" thread is
@@ -124,7 +124,7 @@ pilot's discarded weight there is artificially small, and the resulting
 score clamps the bond to chi_min). max-row-norm and effective-rank are
 derived from the same observable and inherit the same failure mode.
 Extending the shootout to more scores on the same observable was not
-worth the effort. See `PHASE7_REPORT.md` § "The boundary blind spot".
+worth the effort. See `docs/history/PHASE7_REPORT.md` § "The boundary blind spot".
 
 #### A.3 — Better benchmarks ⚠ obviated
 
@@ -292,7 +292,7 @@ discarded weight. Worth revisiting if A.2 shows that PR is the bottleneck.
 
 ### Track D — Tree-Tensor-Network generalisation ✅ closed
 
-Closed by Phase 8 (`PHASE8_REPORT.md`). The full TTN backend lives in
+Closed by Phase 8 (`docs/history/PHASE8_REPORT.md`). The full TTN backend lives in
 `src/ttn/` (5,200+ lines across 13 files). All sub-items delivered:
 
 - **D.1** — `Ttn` data structure, gauge tracking, two-site contraction +
@@ -323,7 +323,7 @@ specifically.
 
 Recording these so we don't re-litigate them every quarter:
 
-- **TJM / Lindblad / open-system**: scope-rejected. See PHASE6_REPORT and
+- **TJM / Lindblad / open-system**: scope-rejected. See docs/history/PHASE6_REPORT.md and
   the previous conversation log. The right tools are symbolic Pauli
   noise propagation and channel-folded fidelity tracking, not stochastic
   state unravelling.
@@ -343,7 +343,7 @@ Recording these so we don't re-litigate them every quarter:
 
 ### Track F — Non-Euclidean topologies and magnetic Hamiltonians (design only)
 
-Design doc lives at `TRACK_F_DESIGN.md`. **No code written.** Realistic
+Design doc lives at `docs/design/TRACK_F_DESIGN.md`. **No code written.** Realistic
 earliest start: Q4/2026 or Q1/2027. Two orthogonal generalisations:
 
 1. **Complex-valued tensors** (F.1) — `Scalar` trait over `f64` ⊕
@@ -451,12 +451,12 @@ annealer-relevant graph structure.
 1. ✅ **Resolved (Phase 7)**: does any sensitivity-based allocator clearly
    beat uniform-χ on a well-defined 1D benchmark at matched budget? **No**,
    in the form the question was asked, and the right *production* answer
-   was sin(C/2) via water-filling all along. See `PHASE7_REPORT.md`.
+   was sin(C/2) via water-filling all along. See `docs/history/PHASE7_REPORT.md`.
 
 2. ✅ **Resolved (Phase 8)**: does the TTN generalisation reproduce
    published heavy-hex benchmarks? **Yes** — Tindall ⟨Z₆₂⟩ at depth 1
    exact to FP precision, full Eagle 127q pipeline at 760 ms / 20 steps,
-   `ProjectedTtn` carries 10⁹ qubits in ~31 min. See `PHASE8_REPORT.md`
+   `ProjectedTtn` carries 10⁹ qubits in ~31 min. See `docs/history/PHASE8_REPORT.md`
    and `results/VQ-110/REPORT.md`.
 
 3. **Open (Track G)**: is there a 1D regime where sin(C/2) provably beats
@@ -480,7 +480,7 @@ labels `track-a`, `track-b`, `track-c`, `track-d`. The current state of
 each track is summarised in the GitHub Project board (to be created
 alongside the first round of issues).
 
-The two design documents `BIANCHI_JOURNEY.md` and `PHASE6_REPORT.md` are
+The two design documents `docs/history/BIANCHI_JOURNEY.md` and `docs/history/PHASE6_REPORT.md` are
 **append-only history**, not living roadmap documents. This ROADMAP file
 is the only living planning document — update it when tracks complete,
 when decisions are made, or when scope changes.

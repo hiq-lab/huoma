@@ -19,10 +19,10 @@ circuits where most of the graph is commensurate.
 - **IBM Eagle 127q heavy-hex** running end-to-end: 20 Floquet steps in
   760 ms at χ = 8, depth-1 ⟨Z₆₂⟩ matches Tindall et al. (PRX Quantum 5,
   010308, 2024) to floating-point precision. See
-  [PHASE8_REPORT.md](PHASE8_REPORT.md).
+  [docs/history/PHASE8_REPORT.md](docs/history/PHASE8_REPORT.md).
 - **1D MPS** validated at FP precision against independent dense statevector
   at N = 12 (2.6e-15) and N = 24 (7.4e-16), 6.7× faster than dense at
-  N = 24. See [PHASE6_REPORT.md](PHASE6_REPORT.md).
+  N = 24. See [docs/history/PHASE6_REPORT.md](docs/history/PHASE6_REPORT.md).
 - **1M-qubit projected TTN** via commensurability partitioning, 3 Floquet
   steps in 5.8 s. See `tests/projected_ttn_scale.rs`.
 - **178 tests, all green.** Standalone Rust crate, no workspace
