@@ -1,4 +1,5 @@
-/target
+# Build artefacts (top-level and nested crates)
+**/target/
 **/*.rs.bk
 Cargo.lock.bak
 
@@ -16,3 +17,12 @@ Cargo.lock.bak
 
 # Internal data (not part of the public release)
 data/
+
+# Phase-4/5 demo artefacts (wildfire demo + generated SVG/video output)
+demo/
+media/
+
+# Python build / cache
+__pycache__/
+*.pyc
+*.pyo
