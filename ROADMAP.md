@@ -359,43 +359,64 @@ constitute work on RH itself.
 
 ---
 
-### Track G — Bond-disordered XXZ in the Griffiths regime (active)
+### Track G — Bond-disordered XXZ in the Griffiths regime ✅ closed (position statement)
 
-**The next planning conversation.** This is the validation experiment
-that closes the one open question Phase 7 left behind: *for which class
-of 1D models does sin(C/2) provably beat uniform-χ at matched budget?*
-Phase 7 ruled it out for clean / weakly-disordered KIM (Dalzell–Brandão
-puts uniform-χ near-optimal there). The published opening is bond-
-disordered XXZ in the Griffiths regime (Aramthottil et al., PRL 133,
-196302 (2024)) — rare regions of anomalously small `J_i` dominate the
-slow dynamics, and a per-bond allocator has a real opportunity if it can
-identify them.
+Closed 2026-05-30 as a position statement based on first principles
+plus the G.1 + G.2 + score-design work. The originally-planned G.3
+empirical shootout is deferred — the conceptual question Track G
+existed to answer is settled without it.
 
-**Sub-items**:
+**Verdict (full discussion in `results/VQ-136/REPORT.md`):** sin(C/2)
+is the right *score* for driven systems with per-site frequency
+channels (KIM, QKR — Phase 7 production path). It does *not* transfer
+to static-coupling-disorder physics: bond-disordered XXZ has no drive,
+no KAM torus structure, and even with the geometrically correct site
+frequencies `ω_i = √(|J_{i-1}| · |J_i|)` it is brittle to
+integer-coincidence in disorder values (`J_weak = 0.01 = 1/100`
+produces an exact integer ω-ratio across the chain and is reported as
+"perfectly commensurate").
 
-- **G.1** — XXZ gate set in `src/kicked_ising.rs` (or new
-  `src/models/xxz.rs`): `H = Σ J_i (Sx_i Sx_{i+1} + Sy_i Sy_{i+1} + Δ Sz_i Sz_{i+1})`
-  with sampling primitives for the standard bond-disorder distributions.
-- **G.2** — ITensor reference path. `external/itensor_ref/` already
-  carries the Julia/ITensor scaffold from Track D; extend with an
-  ε-truncation runner that matches a configurable total-χ budget.
-- **G.3** — Shootout. At matched total budget per system size, three
-  allocators: uniform, ε-truncated ITensor reference, sin(C/2) +
-  water-filling. Metrics: max ⟨S^z⟩ error, max bipartite entanglement
-  entropy error, total wall time. Disorder strength swept across weak →
-  Griffiths regime.
-- **G.4** — Verdict. Either (a) sin(C/2) beats uniform in a measurable
-  regime → publishable methods note, Track A's open question definitively
-  answered, or (b) sin(C/2) is competitive but not better → Track A
-  closes for good with that statement, no further allocator work.
+The right Griffiths-XXZ score is `|J_i|` per bond, fed into
+`chi_allocation_target_budget`. Derivation: TEBD bipartite entropy
+across bond i grows as `S_i(t) ≈ min(log 2, |J_i| · t)`, so strong
+bonds form singlets fastest and need the highest χ. Dasgupta–Ma RG
+confirms (the strongest bond is eliminated first by singlet
+formation). This contradicts the common "weak bonds = transport
+bottleneck = give them more χ" intuition — which is correct for
+transport but inverted for bipartite entanglement.
 
-**Cost**: 1-2 weeks focused. Risk: medium — it's possible sin(C/2)'s
-frequency-channel structure does not map cleanly onto bond-disorder
-(disorder is in couplings, not local frequencies), in which case the
-right control is a sin(C/2) variant that consumes the bond-disorder
-distribution directly. That would itself be a real finding.
+The strictly stronger Track A statement is therefore: **per-bond
+water-filling on a regime-specific score is universal; Huoma supplies
+the infrastructure for both layers.** sin(C/2) is the score for
+driven systems; `|J_i|` is the score for static-coupling-disorder.
 
-**Tracked in valiant-ops as VQ-136.**
+**Delivered:**
+
+- **G.1** — XXZ gate set in `src/xxz.rs` (`apply_xxz_step`,
+  `xxz_bond_gate`, `sample_bond_disorder_log_uniform`,
+  `reference_xxz_run`, `product_state_mps`) + dense anchor at N=10
+  lossless to max ⟨Z⟩ err ≤ 1e-12 over 50 Trotter steps.
+- **G.2** — ITensor reference runner
+  `external/itensor_ref/xxz_griffiths.jl`, Julia 1.12 + ITensors v0.9
+  + ITensorMPS v0.4 (committed `Project.toml` + `Manifest.toml`),
+  cross-checked against Huoma's dense at lossless N=10 to 1.8e-10
+  element-wise. Manifest contract pinned by
+  `ItensorXxzManifest::round_trip_test`.
+- **G.2.5** — `xxz_griffiths_bond_scores` (production allocator
+  score, `|J_i|`) and `xxz_site_frequencies` (sin(C/2) negative
+  control, geometric mean), with tests pinning both the correct
+  Griffiths behaviour and the sin(C/2) failure mode explicitly.
+
+**Deferred (G.3):** the four-way shootout at N ∈ {32, 64, 128} × 5
+disorder strengths × 10 realisations. Required for a Phys. Rev. B
+methods-note submission but not for the architectural verdict.
+~3–5 days of harness + analysis on top of the existing G.1/G.2
+infrastructure; revisit when a publication or collaboration concretely
+asks for the numbers. The two G.3 outcomes that would *change* the
+verdict are recorded in `results/VQ-136/REPORT.md` § "What G.3 could
+change."
+
+**Tracked in valiant-ops as VQ-136 (done).**
 
 ---
 
@@ -431,17 +452,21 @@ allocator story extends into annealer-relevant graph structure.
    `ProjectedTtn` carries 10⁹ qubits in ~31 min. See `docs/history/PHASE8_REPORT.md`
    and `results/VQ-110/projected_1b/REPORT.md`.
 
-3. **Open (Track G)**: is there a 1D regime where sin(C/2) provably beats
-   uniform-χ at matched budget? Bond-disordered XXZ in the Griffiths
-   regime is the published opening (Aramthottil et al., 2024). Either
-   answers definitively or extends the allocator. This is the next
-   planning conversation.
+3. ✅ **Resolved (Track G, position statement 2026-05-30)**: is there a
+   1D regime where sin(C/2) provably beats uniform-χ at matched budget?
+   **No** for sin(C/2) specifically — it is a KAM filter, applies only
+   to driven systems. **Yes** for the underlying water-filling
+   architecture, with a regime-specific score (`|J_i|` for static
+   bond-coupling-disorder, derived from RG + TEBD entropy). See
+   `results/VQ-136/REPORT.md`. The empirical magnitude (G.3) is
+   deferred until a publication or collaboration calls for it.
 
 4. **Open (Track F)**: when do we commit to the complex-tensor +
    hyperbolic-layout pivot? Currently sketched only. F.1 + F.2 are the
    gating prerequisite for everything downstream including the RH-adjacent
    sub-path. Q4/2026 or Q1/2027 by default; pull forward if a customer
-   conversation or paper deadline justifies it.
+   conversation or paper deadline justifies it. **With Track G closed,
+   this is now the next active planning conversation.**
 
 ---
 
