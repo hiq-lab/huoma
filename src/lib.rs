@@ -27,6 +27,7 @@ pub mod mps;
 pub mod partition;
 pub mod reassembly;
 pub mod ttn;
+pub mod xxz;
 
 // Production-recommended χ allocators, re-exported at crate root.
 pub use allocator::{
