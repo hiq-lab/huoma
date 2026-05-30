@@ -1,6 +1,7 @@
 [deps]
-ITensors = "0.6"
-ITensorNetworks = "0.11"
-JSON3 = "1"
-CSV = "0.10"
-DataFrames = "1"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+ITensorMPS = "0d1a4710-d33b-49a5-8f18-73bdf49b47e2"
+ITensorNetworks = "2919e153-833c-4bdc-8836-1ea460a35fc7"
+ITensors = "9136182c-28ba-11e9-034c-db9fb085ebd5"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"

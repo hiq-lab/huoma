@@ -30,6 +30,7 @@
 
 using JSON3
 using ITensors
+using ITensorMPS  # ITensors >= 0.7 split MPS/MPO ops into this package
 
 # ──────────────────────────────────────────────────────────────────────
 # Manifest schema (Rust-side writer in src/xxz.rs companion driver)
