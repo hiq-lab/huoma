@@ -29,6 +29,7 @@
 //! same diagonal phase). Constructed by `xxz_bond_gate(j_dt, delta)`.
 
 use num_complex::Complex64;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::mps::Mps;
@@ -144,6 +145,57 @@ pub fn sample_bond_disorder_log_uniform(
             (log_min + u * span).exp()
         })
         .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ITensor cross-reference manifest (Track G.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Configuration for an ITensor cross-reference run. Serialised to a
+/// `*.manifest.json` file consumed by `external/itensor_ref/xxz_griffiths.jl`,
+/// and produces an `*.itensor.json` next to the manifest.
+///
+/// The schema is the load-bearing contract between Huoma and the Julia
+/// reference runner — both sides must agree on every field name and
+/// convention (especially `initial_index` MSB-ordering and the
+/// `j_per_bond` bond direction).
+///
+/// See `external/itensor_ref/README.md` for the matching Julia loader
+/// (`load_manifest`) and the output schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItensorXxzManifest {
+    /// Chain length.
+    pub n: usize,
+    /// XXZ anisotropy along z.
+    pub delta: f64,
+    /// Trotter step size.
+    pub dt: f64,
+    /// Number of Trotter steps.
+    pub n_steps: usize,
+    /// Computational-basis initial-state index. MSB = qubit 0 (Huoma
+    /// convention). E.g. for N = 4 the Néel state |0101⟩ is
+    /// `0b0101 = 5`.
+    pub initial_index: u64,
+    /// Per-bond couplings `J_i`, length `n - 1`. `j_per_bond[i]` is the
+    /// coupling on the bond between qubits `i` and `i + 1`.
+    pub j_per_bond: Vec<f64>,
+    /// ITensor `maxdim` bond-dim cap.
+    pub chi_cap: usize,
+    /// ITensor `cutoff` discarded-weight threshold. Pass `0.0` to
+    /// disable cutoff-truncation (rely on `chi_cap` alone).
+    pub epsilon: f64,
+}
+
+impl ItensorXxzManifest {
+    /// Serialise the manifest to pretty-printed JSON.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("ItensorXxzManifest serialisation is infallible")
+    }
+
+    /// Parse a manifest from JSON.
+    pub fn from_json(s: &str) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -375,6 +427,52 @@ mod tests {
             (log_mean - expected_log_mean).abs() < 0.2,
             "log-mean {log_mean} too far from {expected_log_mean}",
         );
+    }
+
+    /// The ITensor manifest must round-trip through JSON without loss
+    /// of any field. This is the cross-language contract — if it
+    /// breaks, the Julia loader breaks silently.
+    #[test]
+    fn itensor_manifest_round_trips() {
+        let original = ItensorXxzManifest {
+            n: 32,
+            delta: 1.0,
+            dt: 0.1,
+            n_steps: 50,
+            initial_index: 0b1010_1010_1010_1010_1010_1010_1010_1010,
+            j_per_bond: vec![0.5, 1.2, 0.3, 1.7, 0.9],
+            chi_cap: 64,
+            epsilon: 1e-12,
+        };
+        let json = original.to_json();
+        let parsed = ItensorXxzManifest::from_json(&json).expect("round-trip parse must succeed");
+        assert_eq!(parsed.n, original.n);
+        assert_eq!(parsed.delta, original.delta);
+        assert_eq!(parsed.dt, original.dt);
+        assert_eq!(parsed.n_steps, original.n_steps);
+        assert_eq!(parsed.initial_index, original.initial_index);
+        assert_eq!(parsed.j_per_bond, original.j_per_bond);
+        assert_eq!(parsed.chi_cap, original.chi_cap);
+        assert_eq!(parsed.epsilon, original.epsilon);
+
+        // Field names must match what the Julia loader expects. If a
+        // future refactor renames a struct field (e.g. via #[serde(rename)])
+        // this assert fails loudly.
+        for needed in [
+            "\"n\"",
+            "\"delta\"",
+            "\"dt\"",
+            "\"n_steps\"",
+            "\"initial_index\"",
+            "\"j_per_bond\"",
+            "\"chi_cap\"",
+            "\"epsilon\"",
+        ] {
+            assert!(
+                json.contains(needed),
+                "manifest JSON is missing field {needed}; Julia loader will break:\n{json}",
+            );
+        }
     }
 
     /// Lossless χ at N = 10: MPS evolution under `apply_xxz_step` must
