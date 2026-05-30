@@ -158,18 +158,15 @@ derived from the same observable and inherit the same failure mode.
 Extending the shootout to more scores on the same observable was not
 worth the effort. See `docs/history/PHASE7_REPORT.md` § "The boundary blind spot".
 
-#### A.3 — Better benchmarks ⚠ obviated
+#### A.3 — Better benchmarks ⚠ obviated → reopened as Track G
 
-The literature scan during Phase 7 (recorded in session notes) confirmed
-that for clean / weakly-disordered 1D systems, Dalzell–Brandão (Quantum
-2019) implies uniform-χ is structurally near-optimal — *no* allocator
-can give more than constant-factor improvements there. The only published
-opening for adaptive χ in 1D is bond-disordered XXZ in the Griffiths
-regime (Aramthottil et al., PRL 133, 196302, 2024). Adding more KIM
-benchmarks is not the experiment that resolves Track A — running Huoma
-against ITensor's ε-truncation on bond-disordered XXZ would be, but that
-is independently more interesting as a Track B / C item than as a
-gating Track A test.
+The literature scan during Phase 7 confirmed that for clean /
+weakly-disordered 1D systems, Dalzell–Brandão (Quantum 2019) implies
+uniform-χ is structurally near-optimal — *no* allocator can give more
+than constant-factor improvements there. The only published opening for
+adaptive χ in 1D is bond-disordered XXZ in the Griffiths regime
+(Aramthottil et al., PRL 133, 196302, 2024). That experiment is now
+Track G.
 
 #### A.4 — Answered
 
@@ -201,30 +198,20 @@ is gone as of commit `ce488e0`.
 
 ### Track B — Production hardening
 
-Independent of whether the Jacobian wins, the simulator infrastructure has
-real value and should be production-ready.
+Items that earn their keep on the library surface. Two done (B.3, B.6),
+two remain on the backlog (B.1, B.4). Speculative items were struck
+2026-05-30 — opportunistic tech-debt cleanup (former B.5) happens during
+the next touch of the affected file rather than as a roadmap line item,
+and a generic cost estimator (former B.2) is on hold until a concrete
+user surfaces.
 
-#### B.1 — Doc tests + examples
+#### B.1 — Examples
 
-Currently the only entry point is the test suite. Add at least three
-runnable examples in `examples/`:
+Currently the only entry point is the test suite. Add two runnable
+examples in `examples/`:
 - `examples/kim_basic.rs` — minimal kicked Ising on N = 100
-- `examples/jacobian_alloc.rs` — build a Jacobian, allocate χ, run a
-  production circuit, compute observables
 - `examples/disordered_quench.rs` — disordered KIM with measurement at
   multiple time slices
-
-#### B.2 — Real cost estimator
-
-`reassembly::estimate_fidelity` and `bench::PipelineResult` already track
-some cost metrics. Build a public `huoma::cost::estimate(...)` that takes
-a circuit + a χ allocation and returns:
-- expected wall time (calibrated against benchmarks)
-- expected memory peak
-- expected total discarded weight (if a Jacobian / pilot run is supplied)
-
-**Deliverable**: `src/cost.rs` + tests + integration with the existing
-benchmarks.
 
 #### B.3 — Streaming / chunked observables ✅ done
 
@@ -237,17 +224,13 @@ trusted O(N² · χ⁴) reference.
 
 #### B.4 — Serialisation
 
-Save and restore `Mps` to/from disk so long-running benchmarks can
-checkpoint. Use `serde` (already a dep) with the `bincode` format, gated
-behind a feature flag.
-
-#### B.5 — Lift the Bianchi feature flag and the dead-code allowances
-
-`bench.rs` still has `#[allow(clippy::needless_return,
-clippy::type_complexity, clippy::manual_clamp)]`. Some of these are real
-issues that should be fixed in the code; others are spurious and should be
-narrowed. Same for several `derive_default_impl` warnings on
-`TruncationMode`. Tech debt, low priority but worth a one-shot pass.
+Save and restore `Mps` / `Ttn` to/from disk so long-running benchmarks
+can checkpoint and resume. Concrete trigger: the 30K 2D adiabatic ramp
+hit `SvdFailed(0)` at 102 min wall (`canon_every=5` attempt) — losing
+102 minutes of CPU time to a crash that could have been recovered from
+a checkpoint at min 90 is the kind of pain that justifies this. Use
+`serde` (already a dep) with the `bincode` format, gated behind a
+feature flag.
 
 #### B.6 — Canonical-form stability primitives ✅ done
 
@@ -285,40 +268,16 @@ and `results/VQ-110/annealer_stress_test/adiabatic_2d_30k_run.log`.
 
 ---
 
-### Track C — Algorithmic experiments (no longer gated)
+### Track C — struck 2026-05-30
 
-Track A is closed but did not produce evidence that adaptive χ on 1D MPS
-delivers more than constant-factor wins over uniform-χ in any regime
-Huoma currently tests. Track C ideas remain individually interesting but
-none are *required* for Huoma's production story; they are research
-investments that compete with Track D for time. Pursue selectively.
-
-#### C.1 — TDVP instead of TEBD
-
-The current Trotterised evolution accumulates error from finite step
-size. Time-Dependent Variational Principle (TDVP) is parameter-free and
-works directly on the MPS manifold. For Floquet circuits TEBD is still
-preferred (the gates are explicit), but for arbitrary time-dependent
-Hamiltonians TDVP could open new use cases.
-
-Reference: Haegeman, Lubich, Oseledets, Vandereycken, Verstraete (2016).
-
-#### C.2 — Variational χ allocation
-
-Instead of building a Jacobian on a pilot run and then committing to a χ
-profile, optimise the profile *during* the production run by minimising a
-combination of (estimated) discarded weight and total budget. This would
-make the allocator adaptive to the actual circuit being executed, not just
-the pilot.
-
-#### C.3 — Sobol indices instead of finite differences
-
-Replace the central-difference Jacobian with proper Sobol sensitivity
-indices using a Saltelli sampling scheme. More expensive per pilot run but
-gives variance-decomposition information that the FD Jacobian does not.
-
-This was tried in Phase 5f and found correlation 0.65–0.71 with measured
-discarded weight. Worth revisiting if A.2 shows that PR is the bottleneck.
+Was: TDVP-instead-of-TEBD, variational χ allocation, Sobol indices. All
+three were speculative research items without a concrete user or
+blocker. TDVP and variational-χ were "could open new use cases" without
+any circuit class demanding them. Sobol was already tried in Phase 5f
+with mediocre correlation (Spearman 0.65–0.71) and its revisit-trigger
+(Track A.2 showing PR as bottleneck) is dead because A.2 is obviated.
+Huoma is a library and a paper pipeline, not a research lab — these
+items either earn their place via a concrete trigger or stay struck.
 
 ---
 
@@ -436,46 +395,26 @@ frequency-channel structure does not map cleanly onto bond-disorder
 right control is a sin(C/2) variant that consumes the bond-disorder
 distribution directly. That would itself be a real finding.
 
-**Tracked in valiant-ops as VQ-111.**
+**Tracked in valiant-ops as VQ-136.**
 
 ---
 
 ### Track H — Annealer routing prediction (deferred)
 
-The originally-framed motivation behind the closed-system adiabatic-ramp
-runs (`results/VQ-110/annealer_stress_test/ANNEALER_THREAD.md`,
-`ANNEALER_THREAD_2D.md`) was
-to scale the simulator to qubit counts beyond current D-Wave Pegasus /
-Zephyr hardware, observe routing pathologies at scale, and project back
-onto next-generation D-Wave architecture decisions. The April-2026
-sprint did not build that programme; it built the *engine* (validated 1M
-chain, 9.5K 2D heavy-hex grid with non-tree edges, `canonicalize_and_normalize`
-primitives) but not Pegasus/Zephyr topology generators, not a routing
-variation sweep, and not the back-projection.
+The April-2026 adiabatic-ramp sprint built the engine (1M chain, 30K 2D
+heavy-hex grid with non-tree edges, `canonicalize_and_normalize`) but
+not the programme it was framed against: Pegasus/Zephyr topology
+generators, a routing-variation sweep, and the back-projection onto
+next-generation D-Wave architecture. The engine evidence lives at
+`results/VQ-110/annealer_stress_test/`.
 
-What is missing for Track H to be a real programme:
-
-1. `PegasusLayout::generation(m)` matching the D-Wave Boothby et al. 2020
-   spec, validated bit-stable against the `dwave-system` Python SDK.
-2. `ZephyrLayout::generation(m)` for Advantage2-class topologies.
-3. Routing-variation framework: fixed Ising instance, varied
-   swap-network orderings and χ allocations, per-edge discarded-weight
-   diagnostics as TSV + heatmap.
-4. Scaling sweep across Pegasus(15), (16), (20) and Zephyr(4), (6) —
-   pattern extraction by edge class.
-5. A predictive write-up that says "at Pegasus(M=X), expect
-   bottleneck-class Y to dominate at fraction Z."
-
-**Why this is deferred, not killed**: Huoma's distinguishing primitive is
-sin(C/2) commensurability on frequency channels. An annealing problem
-Hamiltonian is real-valued couplings, not a frequency channel — the
-sin(C/2) machinery does not apply. Track H would use Huoma as a generic
-TTN simulator, not as the sin(C/2)-structured one. That is a fine
-application project but it does not advance Huoma as a library. Returning
-to it is conditional on (a) a concrete D-Wave-adjacent collaboration that
+Deferred, not killed: Huoma's sin(C/2) primitive presupposes a
+frequency channel; an annealing problem Hamiltonian is real-valued
+couplings only, so this track would use Huoma as a generic TTN
+simulator, not as the sin(C/2)-structured one. Returning to it is
+conditional on (a) a concrete D-Wave-adjacent collaboration that
 justifies an application sprint, or (b) Track G finding that the
-allocator story has further headroom in a regime that overlaps with
-annealer-relevant graph structure.
+allocator story extends into annealer-relevant graph structure.
 
 ---
 
@@ -508,12 +447,19 @@ annealer-relevant graph structure.
 
 ## Tracking
 
-Tasks for each track will live as GitHub issues in this repo with the
-labels `track-a`, `track-b`, `track-c`, `track-d`. The current state of
-each track is summarised in the GitHub Project board (to be created
-alongside the first round of issues).
+Active work items live as `VQ-XXX` tickets in valiant-ops
+(`~/Projects/valiant-ops/board.yaml`). Track G sits there as VQ-136.
+There is no per-track GitHub-issue labelling scheme in this repo and
+none planned — valiant-ops is the single source of cross-project task
+state.
 
-The two design documents `docs/history/BIANCHI_JOURNEY.md` and `docs/history/PHASE6_REPORT.md` are
-**append-only history**, not living roadmap documents. This ROADMAP file
-is the only living planning document — update it when tracks complete,
-when decisions are made, or when scope changes.
+Historical work-streams under `docs/history/` are **append-only**:
+
+- `BIANCHI_JOURNEY.md` — Phases 1–5
+- `PHASE6_REPORT.md` — KIM validation + the `apply_zz_fast` bug
+- `PHASE7_REPORT.md` — Track A close, sin(C/2) + water-filling
+  production path
+- `PHASE8_REPORT.md` — Track D close, Eagle 127 Tindall benchmark
+
+This `ROADMAP.md` is the only living planning document — update it when
+tracks complete, decisions are made, or scope changes.
