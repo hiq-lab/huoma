@@ -334,14 +334,19 @@ Recording these so we don't re-litigate them every quarter:
 
 ### Track F — Non-Euclidean topologies and magnetic Hamiltonians (design only)
 
-Design doc lives at `docs/design/TRACK_F_DESIGN.md`. **No code written.** Realistic
-earliest start: Q4/2026 or Q1/2027. Two orthogonal generalisations:
+Design doc lives at `docs/design/TRACK_F_DESIGN.md`. Realistic
+earliest start for the bulk of the track: Q4/2026 or Q1/2027.
 
-1. **Complex-valued tensors** (F.1) — `Scalar` trait over `f64` ⊕
-   `Complex<f64>`, all `gemm`/SVD/QR through `faer`'s complex paths.
-   ~2 weeks mechanical work, prerequisite for everything else in F.
+1. **Complex-valued tensors** (F.1) — **✅ closed via audit
+   2026-05-30 (VQ-139).** The original 2-week-mechanical-pivot
+   estimate was based on a stale assumption; tensors were already
+   `Complex64` throughout. The Peierls hopping smoke-test in
+   `src/peierls.rs` anchors complex-pipeline correctness end-to-end
+   (N=6, lossless, φ = π/3, max ⟨Z⟩ err ≤ 1e-13 over 20 Trotter
+   steps). No remaining pivot work.
 2. **Hyperbolic layouts** (F.2) — Fuchsian-group word generator for
-   {p, q} tilings on the Poincaré disc. ~3-4 weeks.
+   {p, q} tilings on the Poincaré disc. ~3-4 weeks. Independent of
+   the Peierls foundation, but the natural pairing for F.3 below.
 
 Downstream phases (F.3 Peierls/Hofstadter, F.4 spin-orbit, F.5 lanthanide
 benchmark, F.6 circuit-QED hyperbolic, F.7 Selberg / Riemann-adjacent)

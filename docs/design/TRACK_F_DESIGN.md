@@ -65,27 +65,50 @@ external validation independent of Riemann-Hypothesis-style speculation.
 
 ## Phases
 
-### F.1 — Complex-valued tensor pivot
+### F.1 — Complex-valued tensor pivot ✅ closed via audit (VQ-139, 2026-05-30)
 
-**Goal**: Huoma's MPS and TTN data structures carry `Complex<f64>` tensors
-where required, with `f64` as a compile-time specialisation when the
-imaginary part is zero throughout (KIM, real-valued benchmarks).
+**Original framing (stale, kept for history):** Huoma's tensors were
+assumed `f64`, requiring a ~2-week mechanical pivot to a generic
+`Scalar` trait over `f64 ⊕ Complex<f64>`.
 
-**Tasks**:
-- Generic over scalar type via a `Scalar` trait (`f64` ⊕ `Complex<f64>`)
-- All `gemm` / SVD / QR calls routed through `faer`'s complex paths
-- Hermitian-symmetry checks tightened (`H = H†`, not `H = Hᵀ`)
-- Bianchi-violation diagnostic generalised to complex inner products
+**Actual state on audit:** Huoma is already `Complex64` throughout —
+`src/mps.rs`, `src/ttn/mod.rs`, `src/ttn/contraction.rs`,
+`src/ttn/gauge.rs`, `src/kicked_ising.rs`, `src/xxz.rs`. faer SVD/QR
+paths go through `faer::c64`. Hermitian inner products use `.conj()`
+correctly in 22 places. The "all tensors f64" claim went stale around
+Phase 6 or 7. KIM and XXZ already produce genuinely complex MPS states
+with dense-validated anchors. There is no real-only fast path to
+maintain, no `Scalar` trait to introduce, no mechanical pivot to
+execute.
 
-**Cost**: ~2 weeks. Mechanical but pervasive. Touches every file in
-`src/mps.rs`, `src/ttn/`, `src/allocator.rs`. Risk: regressions in the
-existing 178 tests. Mitigation: every test runs in both real and complex
-mode after the pivot — if the real-mode result is bit-identical to the
-pre-pivot result, we have not broken anything.
+**What was missing and is now added (1-day audit instead of 2 weeks):**
+a smoke-test that drives a gate whose off-diagonal entries have *both*
+non-trivial real and imaginary parts (KIM RZ, ZZ, and XXZ bond gates
+all reduce to structured `cos(θ) + i sin(θ)` patterns that a real-only
+path could in principle fake). The Peierls hopping gate at
+`φ ∉ {0, π/2}` exercises this — off-diagonals are
+`±i e^{±iφ} sin(t·dt)` with both real and imaginary parts non-zero
+for generic `φ`.
 
-**Acceptance**: all 178 existing tests pass at FP-precision after the
-pivot; one new test runs the same kicked-Ising circuit in complex mode
-and recovers the real-mode result to 1e-15.
+**Audit deliverable (committed as part of VQ-139):**
+
+- `src/peierls.rs` — `peierls_hopping_gate(t, dt, phi)`,
+  `apply_peierls_step`, `reference_peierls_run`, `product_state_mps`
+- `peierls::tests::peierls_step_matches_dense_lossless_at_n6` —
+  N=6 chain, single particle initially at qubit 2, 20 first-order
+  Trotter steps with `t = 1, dt = 0.1, φ = π/3` per bond, lossless
+  χ = 8. MPS reproduces dense to `max |⟨Z_i⟩| err ≤ 1e-13` every
+  step. **This is the F.1 audit anchor.**
+- Three supporting unit tests:
+  `peierls_gate_is_unitary` (5 (t,dt,φ) cases including the
+  edge-case angles 0 and π/2), `phi_zero_reduces_to_standard_xy_hopping`
+  (pins the standard-XY limit), and
+  `phi_pi_third_has_genuinely_complex_off_diagonals` (pins the
+  non-trivial complex structure + unitarity relationship
+  `U[2,1] = -conj(U[1,2])`).
+
+Peierls hopping is also the foundational gate for F.3 (Hofstadter /
+magnetic Hamiltonians), so the audit doubles as the F.3 entry point.
 
 ### F.2 — Hyperbolic layout generator
 
@@ -227,7 +250,7 @@ of the magnetic Laplacian (zero B-field, scalar spin).
 
 | Phase | If we hit this, kill the track | If we hit this, continue |
 |---|---|---|
-| F.1 | Complex pivot breaks more than 5 of the 178 existing tests irreversibly | All existing tests pass at FP precision in both real and complex modes |
+| F.1 | ~~Complex pivot breaks more than 5 of the 178 existing tests irreversibly~~ ✅ Closed via audit 2026-05-30: tensors were already Complex64, no pivot needed. Peierls smoke-test at φ = π/3, N = 6, lossless χ = 8, 20 Trotter steps reproduces dense to ≤ 1e-13. | n/a — anchor pinned in `peierls::tests::peierls_step_matches_dense_lossless_at_n6` |
 | F.2 | Fuchsian-group generator produces topologically broken tilings (wrong vertex degrees, missing edges) for {7,3} at radius ≥ 5 | Visualisation matches known {7,3}-tiling figures from the literature |
 | F.3 | Hofstadter butterfly disagrees with dense reference at p/q = 1/2 (the most-stress-tested case) | Reproduces to 1e-12 |
 | F.4 | χ required for a Gd³⁺ ligand sphere grows faster than exponentially with ligand-sphere size | χ scales sub-exponentially, ideally polynomially |
@@ -261,7 +284,7 @@ Three reasons to plan it now even if we don't start it now:
 
 | Phase | Weeks | Risk | Notes |
 |---|---|---|---|
-| F.1 | 2 | low | Mechanical pivot |
+| ~~F.1~~ | ~~2~~ | ~~low~~ | ✅ Closed via 1-day audit 2026-05-30 (VQ-139). Tensors were already Complex64; no pivot needed. |
 | F.2 | 3–4 | low | New maths code, well-understood |
 | F.3 | 2–3 | medium | Gauge bookkeeping non-trivial |
 | F.4 | 6–8 | **high** | Where research uncertainty enters |

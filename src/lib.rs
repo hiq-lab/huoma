@@ -25,6 +25,7 @@ pub mod frequency;
 pub mod kicked_ising;
 pub mod mps;
 pub mod partition;
+pub mod peierls;
 pub mod reassembly;
 pub mod ttn;
 pub mod xxz;
