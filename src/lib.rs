@@ -24,6 +24,7 @@ pub mod error;
 pub mod frequency;
 pub mod hyperbolic;
 pub mod kicked_ising;
+pub mod magnetic;
 pub mod mps;
 pub mod partition;
 pub mod peierls;
