@@ -249,6 +249,139 @@ pub fn butterfly_to_csv(rows: &[ButterflyRow]) -> String {
     s
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// M2 — bulk (PBC) Hofstadter on a closed surface, with twist averaging
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::closed_surface::ClosedSurface;
+
+/// `gcd` for flux-fraction reduction.
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Peierls phase for the directed torus edge `u → v` (as stored in the
+/// `ClosedSurface`) under Landau gauge `A = (0, 2πΦx)` plus the two
+/// Aharonov–Bohm twists `(θx, θy)`.
+///
+/// - Vertical edge (same `x` column): Landau phase `2π Φ · x`.
+/// - Horizontal edge (same `y` row): Landau phase 0.
+/// - Twists add `crossing[0]·θx + crossing[1]·θy` (oriented `u → v`).
+///   Because per-face crossings cancel (the M1a invariant) the twists
+///   are flat — they leave every plaquette flux at exactly `2πΦ`.
+fn torus_edge_phase(
+    surface: &ClosedSurface,
+    edge_idx: usize,
+    flux: f64,
+    theta_x: f64,
+    theta_y: f64,
+) -> f64 {
+    let e = &surface.edges[edge_idx];
+    let (xu, _yu) = surface.positions[e.u];
+    let (xv, _yv) = surface.positions[e.v];
+    // Vertical edge: same x column (the two endpoints share x).
+    let landau = if (xu - xv).abs() < 0.5 {
+        2.0 * std::f64::consts::PI * flux * xu
+    } else {
+        0.0
+    };
+    let twist = e.crossing.first().copied().unwrap_or(0) as f64 * theta_x
+        + e.crossing.get(1).copied().unwrap_or(0) as f64 * theta_y;
+    landau + twist
+}
+
+/// Build the magnetic Hamiltonian on a `{4,4}` torus `ClosedSurface`
+/// at flux ratio `flux` and AB twists `(θx, θy)`. Landau gauge; the
+/// twists thread the two homology cycles.
+#[must_use]
+pub fn magnetic_hamiltonian_torus(
+    surface: &ClosedSurface,
+    t: f64,
+    flux: f64,
+    theta_x: f64,
+    theta_y: f64,
+) -> Mat<c64> {
+    let n = surface.n_vertices();
+    let mut h: Mat<c64> = Mat::zeros(n, n);
+    for (idx, e) in surface.edges.iter().enumerate() {
+        let phi = torus_edge_phase(surface, idx, flux, theta_x, theta_y);
+        let amp = Complex64::from_polar(-t, phi);
+        // Accumulate (`+=`), not assign: a degenerate multigraph (e.g.
+        // the L=2 torus, where a site's +x and −x neighbours coincide)
+        // has parallel edges whose hopping amplitudes must sum. For
+        // L ≥ 3 the graph is simple and this is one write per pair.
+        h[(e.u, e.v)] = h[(e.u, e.v)] + c64::new(amp.re, amp.im);
+        h[(e.v, e.u)] = h[(e.v, e.u)] + c64::new(amp.re, -amp.im);
+    }
+    h
+}
+
+/// Twist-averaged eigenvalues: diagonalise the torus magnetic
+/// Hamiltonian over an `n_twist × n_twist` grid of `(θx, θy) ∈
+/// [0, 2π)²` and concatenate all spectra. As `n_twist` grows this
+/// fills the magnetic bands → the bulk Hofstadter spectrum.
+#[must_use]
+pub fn twist_averaged_eigenvalues(
+    surface: &ClosedSurface,
+    t: f64,
+    flux: f64,
+    n_twist: usize,
+) -> Vec<f64> {
+    assert!(n_twist >= 1, "n_twist must be ≥ 1");
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut all = Vec::new();
+    for a in 0..n_twist {
+        let theta_x = two_pi * a as f64 / n_twist as f64;
+        for b in 0..n_twist {
+            let theta_y = two_pi * b as f64 / n_twist as f64;
+            let h = magnetic_hamiltonian_torus(surface, t, flux, theta_x, theta_y);
+            all.extend(hermitian_eigenvalues(&h));
+        }
+    }
+    all
+}
+
+/// The **bulk** Hofstadter butterfly via the PBC + twist method. For
+/// every reduced fraction `p/q` with `2 ≤ q ≤ q_max` (plus `Φ = 0`),
+/// build the `{4,4}` torus of side `L = q` (so `Φ·L² = p·q ∈ ℤ`
+/// satisfies Dirac quantization), twist-average over an
+/// `n_twist × n_twist` grid, and emit one `ButterflyRow` per flux.
+///
+/// This is the bulk analogue of `hofstadter_butterfly` (which is the
+/// OBC `EmbeddedGraph` path): no boundary, the spectrum is the genuine
+/// magnetic band structure. Cost grows as `O(q² · q⁶ · n_twist²)` per
+/// flux from dense ED on the `q²`-site lattice — keep `q_max` modest
+/// (≤ ~16) until the KPM path (M4) lands.
+#[must_use]
+pub fn hofstadter_butterfly_pbc(q_max: usize, t: f64, n_twist: usize) -> Vec<ButterflyRow> {
+    assert!(q_max >= 2, "q_max must be ≥ 2");
+    let mut rows = Vec::new();
+    // Φ = 0 reference. Use L ≥ 3 to avoid the degenerate L=2 multigraph.
+    let s0 = ClosedSurface::torus_44(3);
+    rows.push(ButterflyRow {
+        flux: 0.0,
+        eigenvalues: twist_averaged_eigenvalues(&s0, t, 0.0, n_twist),
+    });
+    for q in 2..=q_max {
+        // L must be a multiple of q (Landau-gauge x-periodicity) and
+        // ≥ 3 (avoid the parallel-edge L=2 multigraph). q=2 → L=4.
+        let l = if q == 2 { 4 } else { q };
+        let surface = ClosedSurface::torus_44(l);
+        for p in 1..=q {
+            if gcd(p, q) != 1 {
+                continue;
+            }
+            let flux = p as f64 / q as f64;
+            let eigs = twist_averaged_eigenvalues(&surface, t, flux, n_twist);
+            rows.push(ButterflyRow {
+                flux,
+                eigenvalues: eigs,
+            });
+        }
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +613,144 @@ mod tests {
             "{{7,3}} vertex graph appears bipartite-symmetric at zero flux \
              — this contradicts its non-bipartiteness (odd heptagonal cycles)",
         );
+    }
+
+    // ── M2: bulk (PBC) torus magnetic spectra ───────────────────────────
+
+    /// **Zero-flux analytic anchor (PBC).** At flux 0 and twist (0,0)
+    /// the torus magnetic Hamiltonian is the plain periodic
+    /// tight-binding model, with spectrum
+    /// `E = -2t[cos(2π a/L) + cos(2π b/L)]` for `a, b ∈ 0..L`.
+    #[test]
+    fn torus_zero_flux_matches_analytic_2d_tight_binding() {
+        let l = 5;
+        let s = ClosedSurface::torus_44(l);
+        let h = magnetic_hamiltonian_torus(&s, 1.0, 0.0, 0.0, 0.0);
+        let eigs = hermitian_eigenvalues(&h);
+
+        let mut analytic: Vec<f64> = Vec::with_capacity(l * l);
+        for a in 0..l {
+            for b in 0..l {
+                let ka = 2.0 * std::f64::consts::PI * a as f64 / l as f64;
+                let kb = 2.0 * std::f64::consts::PI * b as f64 / l as f64;
+                analytic.push(-2.0 * (ka.cos() + kb.cos()));
+            }
+        }
+        analytic.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (k, (&num, &ana)) in eigs.iter().zip(analytic.iter()).enumerate() {
+            assert!(
+                (num - ana).abs() < 1e-10,
+                "PBC zero-flux eig {k}: numeric {num:.10} vs analytic {ana:.10}",
+            );
+        }
+    }
+
+    /// The torus magnetic Hamiltonian must be Hermitian at arbitrary
+    /// flux and twist.
+    #[test]
+    fn torus_hamiltonian_is_hermitian() {
+        let s = ClosedSurface::torus_44(4);
+        let h = magnetic_hamiltonian_torus(&s, 1.0, 0.25, 0.6, 1.1);
+        let n = h.nrows();
+        for i in 0..n {
+            for j in 0..n {
+                let diff = (h[(i, j)] - h[(j, i)].conj()).norm();
+                assert!(diff < 1e-14, "H not Hermitian at ({i},{j}): {diff}");
+            }
+        }
+    }
+
+    /// **Φ = ½ bandwidth anchor (the load-bearing Hofstadter check).**
+    /// The square-lattice magnetic spectrum at half flux has the known
+    /// Harper dispersion `E = ±2t√(cos²k_x + cos²k_y)`, with maximum
+    /// `|E| = 2√2 t` reached at `k = (0,0)`. On the `L = 2` torus the
+    /// twist grid includes `(θ_x, θ_y) = (0,0)`, which samples
+    /// `k = (0,0)` exactly, so the maximum eigenvalue must equal
+    /// `2√2 t` to FP precision.
+    ///
+    /// Uses `L = 4` (not `L = 2`): the `L = 2` torus is a degenerate
+    /// multigraph where each site's +x and −x neighbours coincide, so
+    /// it does not represent the infinite-lattice dispersion. `L = 4`
+    /// is a simple graph carrying flux ½ (`Φ·L² = 8 ∈ ℤ`) and its
+    /// twist grid still samples `k = (0,0)` at `(θx, θy) = (0,0)`.
+    #[test]
+    fn torus_half_flux_bandwidth_is_two_sqrt_two() {
+        let s = ClosedSurface::torus_44(4);
+        let eigs = twist_averaged_eigenvalues(&s, 1.0, 0.5, 8);
+        let max_abs = eigs.iter().fold(0.0_f64, |m, &e| m.max(e.abs()));
+        let target = 2.0 * std::f64::consts::SQRT_2;
+        assert!(
+            (max_abs - target).abs() < 1e-9,
+            "Φ=½ max|E| = {max_abs:.10}, expected 2√2 = {target:.10}",
+        );
+        // And the spectrum must reach (near) zero — the two Φ=½ bands
+        // touch at E = 0.
+        let min_abs = eigs.iter().fold(f64::INFINITY, |m, &e| m.min(e.abs()));
+        assert!(min_abs < 0.3, "Φ=½ bands should approach E=0, min|E|={min_abs}");
+    }
+
+    /// **Bipartite E → −E symmetry (PBC).** The square lattice is
+    /// bipartite, so at any flux/twist the torus spectrum is symmetric
+    /// about `E = 0`. Checked at Φ = 1/4 over the twist average.
+    #[test]
+    fn torus_spectrum_is_bipartite_symmetric() {
+        let s = ClosedSurface::torus_44(4);
+        let mut eigs = twist_averaged_eigenvalues(&s, 1.0, 0.25, 6);
+        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = eigs.len();
+        for k in 0..n {
+            // eigs[k] should pair with -eigs[n-1-k].
+            assert!(
+                (eigs[k] + eigs[n - 1 - k]).abs() < 1e-9,
+                "bipartite asymmetry: eigs[{k}]={:.6}, eigs[{}]={:.6}",
+                eigs[k],
+                n - 1 - k,
+                eigs[n - 1 - k],
+            );
+        }
+    }
+
+    /// **Φ = 1/3 band count.** At flux 1/3 the magnetic spectrum has
+    /// three bands separated by two gaps. Detect the gaps in the
+    /// twist-averaged spectrum and require exactly two sizeable ones.
+    #[test]
+    fn torus_third_flux_has_three_bands() {
+        let s = ClosedSurface::torus_44(3);
+        let mut eigs = twist_averaged_eigenvalues(&s, 1.0, 1.0 / 3.0, 16);
+        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Count gaps larger than a threshold between consecutive eigenvalues.
+        let mut big_gaps = 0;
+        for w in eigs.windows(2) {
+            if w[1] - w[0] > 0.3 {
+                big_gaps += 1;
+            }
+        }
+        assert_eq!(
+            big_gaps, 2,
+            "Φ=1/3 should show 3 bands (2 gaps), found {big_gaps} gaps",
+        );
+    }
+
+    /// Bulk PBC butterfly smoke test: `hofstadter_butterfly_pbc`
+    /// produces rows, the spectrum stays bounded by the zero-flux
+    /// bandwidth (±4t), and the whole butterfly is E → −E symmetric.
+    #[test]
+    fn pbc_butterfly_smoke() {
+        let rows = hofstadter_butterfly_pbc(5, 1.0, 4);
+        assert!(rows.len() >= 5, "expected several flux rows");
+        for row in &rows {
+            for &e in &row.eigenvalues {
+                assert!(e.abs() <= 4.0 + 1e-9, "flux {} eig {e} exceeds ±4t", row.flux);
+            }
+            // Global E → −E for the row (bipartite at every flux).
+            for &e in &row.eigenvalues {
+                assert!(
+                    row.eigenvalues.iter().any(|&f| (f + e).abs() < 1e-6),
+                    "flux {}: eig {e} has no -E partner",
+                    row.flux
+                );
+            }
+        }
     }
 }
