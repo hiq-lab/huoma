@@ -15,14 +15,18 @@ Cargo.lock.bak
 # Claude Code worktrees
 .claude/
 
-# Internal data (not part of the public release)
-data/
+# Internal top-level data (not part of the public release)
+# Subdirectories named `data/` under `external/` are reference
+# data — committed, not ignored.
+/data/
 
 # Phase-4/5 demo artefacts (wildfire demo + generated SVG/video output)
 demo/
 media/
 
-# Python build / cache
+# Python build / cache + venvs (e.g. external/hypertiling_ref/.venv)
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/

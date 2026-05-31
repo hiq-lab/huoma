@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "inputs": {
+    "p": 7,
+    "q": 3,
+    "hypertiling_n": 2,
+    "huoma_max_face_shells": 1
+  },
+  "n_polygons": 8,
+  "n_vertices": 35,
+  "n_edges": 42,
+  "degree_histogram": {
+    "2": 21,
+    "3": 14
+  },
+  "tool_version": "1.5.1"
+}
