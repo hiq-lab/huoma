@@ -24,7 +24,7 @@ hard way — are anything that needs (a) open-system / Lindblad dynamics,
 (b) translation-invariant 1D chains where uniform-χ is already optimal,
 or (c) couplings on graphs that are not tree-decomposable.
 
-## Where Huoma stands today (May 2026, after Phase 8 + scale sprint)
+## Where Huoma stands today (end of Phase 9, May 2026)
 
 ✅ **Validated**:
 - 1D MPS at FP precision vs dense statevector: N = 12 (2.6e-15) and
@@ -39,8 +39,15 @@ or (c) couplings on graphs that are not tree-decomposable.
 - Adiabatic-ramp engine: 1M chain in 18 min, 30K 2D heavy-hex grid with
   non-tree edges in 150 min — with three FP-precision dense anchors at
   N = 12 chain, N = 15 binary tree, N = 19 heavy-hex grid.
+- XXZ bond-disordered TEBD at N = 10 lossless to ≤ 1e-12 vs dense
+  (Track G.1); Huoma vs ITensor cross-check to 1.8e-10 (Track G.2).
+- Peierls magnetic hopping gate at φ = π/3 to ≤ 1e-13 vs dense at N = 6
+  lossless over 20 Trotter steps (Track F.1 complex-pipeline audit).
+- Hyperbolic {7, 3} tiling matches Python HyperTiling exactly on
+  combinatorial invariants at radii 0–2 (7 → 35 → 112 vertices, 7 →
+  42 → 140 edges, identical degree histograms; Track F.2.b).
 - 215 tests total across lib + integration binaries (3 `#[ignore]`d
-  scale runs), all green on 2026-05-29.
+  scale runs), all green on 2026-05-31.
 
 ✅ **Production allocator path** (1D):
 - `huoma::chi_allocation_sinc(frequencies, total_budget, chi_min, chi_max)`
@@ -334,8 +341,9 @@ Recording these so we don't re-litigate them every quarter:
 
 ### Track F — Non-Euclidean topologies and magnetic Hamiltonians (design only)
 
-Design doc lives at `docs/design/TRACK_F_DESIGN.md`. Realistic
-earliest start for the bulk of the track: Q4/2026 or Q1/2027.
+Design doc lives at `docs/design/TRACK_F_DESIGN.md`. **Status as of
+end of Phase 9 (2026-05-31): foundation closed, downstream
+de-committed.**
 
 1. **Complex-valued tensors** (F.1) — **✅ closed via audit
    2026-05-30 (VQ-139).** The original 2-week-mechanical-pivot
@@ -344,9 +352,37 @@ earliest start for the bulk of the track: Q4/2026 or Q1/2027.
    `src/peierls.rs` anchors complex-pipeline correctness end-to-end
    (N=6, lossless, φ = π/3, max ⟨Z⟩ err ≤ 1e-13 over 20 Trotter
    steps). No remaining pivot work.
-2. **Hyperbolic layouts** (F.2) — Fuchsian-group word generator for
-   {p, q} tilings on the Poincaré disc. ~3-4 weeks. Independent of
-   the Peierls foundation, but the natural pairing for F.3 below.
+2. **Hyperbolic layouts** (F.2.a + F.2.b) — **✅ closed 2026-05-31.**
+   Pure-Rust Möbius isometries + face-edge BFS for arbitrary
+   hyperbolic {p, q}, producing `Topology` + non-tree edges. {7, 3}
+   matches Python HyperTiling exactly on vertex / edge /
+   degree-histogram counts at radii 0–2 (7 → 35 → 112 vertices).
+   For q ≥ 4 the two implementations use different shell
+   conventions — F.2.c (3–5 days) would bridge them but is
+   deferred; both are valid tree-decomposable subgraphs as-is.
+   See `src/hyperbolic.rs` and `external/hypertiling_ref/`.
+
+**Downstream phases F.3 – F.7 are not committed in Huoma's near-term
+plan as of end of Phase 9:**
+
+- **F.4 + F.5 Lanthanide chemistry** — moved to Garm. The
+  architectural prerequisite (d > 2 site Hilbert spaces, ~4–6 week
+  refactor) plus the chemistry infrastructure (active-space
+  integrals, ligand-field modelling, EPR/NMR-aware observables) live
+  more naturally in Garm's context. Huoma stays a driven-system TEBD
+  library.
+- **F.7 RH-adjacent Selberg spectrum** — classified as a hobby
+  thread. The F.2 foundation (hyperbolic tilings + Möbius) sits
+  ready; a `LaplacianSpectrum` module is ~2–3 weeks to a publishable
+  methods note if/when this is picked up.
+- **F.3 Hofstadter butterfly on hyperbolic lattices** — technically
+  unblocked (Peierls hopping from F.1 + hyperbolic topologies from
+  F.2 are both ready) but not committed here.
+
+The detailed design for F.3 – F.7 remains in
+`docs/design/TRACK_F_DESIGN.md` as the record of where the original
+architectural commitments came from; the strategic re-routing is
+documented in `docs/history/PHASE9_REPORT.md`.
 
 Downstream phases (F.3 Peierls/Hofstadter, F.4 spin-orbit, F.5 lanthanide
 benchmark, F.6 circuit-QED hyperbolic, F.7 Selberg / Riemann-adjacent)
@@ -466,12 +502,14 @@ allocator story extends into annealer-relevant graph structure.
    `results/VQ-136/REPORT.md`. The empirical magnitude (G.3) is
    deferred until a publication or collaboration calls for it.
 
-4. **Open (Track F)**: when do we commit to the complex-tensor +
-   hyperbolic-layout pivot? Currently sketched only. F.1 + F.2 are the
-   gating prerequisite for everything downstream including the RH-adjacent
-   sub-path. Q4/2026 or Q1/2027 by default; pull forward if a customer
-   conversation or paper deadline justifies it. **With Track G closed,
-   this is now the next active planning conversation.**
+4. ✅ **Resolved (end of Phase 9, 2026-05-31)**: Track F's foundation
+   (F.1 complex-pivot audit + F.2.a + F.2.b hyperbolic tilings) is
+   closed. Downstream phases (F.3 Hofstadter, F.4–F.5 Lanthanide,
+   F.7 Selberg) are explicitly *not* committed in Huoma's near-term
+   plan — Lanthanide moves to Garm, RH-adjacent stays as a hobby
+   thread, Hofstadter is technically unblocked but not started.
+   See `docs/history/PHASE9_REPORT.md`. No active Track F sprint
+   on the calendar.
 
 ---
 
