@@ -20,6 +20,7 @@
 pub mod allocator;
 pub mod bianchi;
 pub mod channel;
+pub mod closed_surface;
 pub mod error;
 pub mod frequency;
 pub mod hyperbolic;
