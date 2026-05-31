@@ -22,6 +22,7 @@ pub mod bianchi;
 pub mod channel;
 pub mod error;
 pub mod frequency;
+pub mod hyperbolic;
 pub mod kicked_ising;
 pub mod mps;
 pub mod partition;
